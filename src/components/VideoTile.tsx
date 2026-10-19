@@ -12,9 +12,30 @@ type Props = {
   style?: CSSProperties;
   /** Rasio lebar/tinggi tile, sama dengan sel di hasil foto. */
   aspect?: number;
+  /** Cerminkan tampilan (kamera depan). Bawaan true; kamera belakang tidak dicerminkan. */
+  mirror?: boolean;
+  /** Status koneksi teman; tidak diisi untuk tile milik sendiri. */
+  quality?: "good" | "weak" | "connecting";
 };
 
-export function VideoTile({ stream, label, muted = false, filterCss, videoRef, emptyText, style, aspect = 4 / 3 }: Props) {
+const QUALITY_BADGE = {
+  good: { dot: "bg-green-400", text: "Lancar" },
+  weak: { dot: "bg-amber-400", text: "Lemah" },
+  connecting: { dot: "bg-paper/60", text: "Menyambung" },
+} as const;
+
+export function VideoTile({
+  stream,
+  label,
+  muted = false,
+  filterCss,
+  videoRef,
+  emptyText,
+  style,
+  aspect = 4 / 3,
+  mirror = true,
+  quality,
+}: Props) {
   const innerRef = useRef<HTMLVideoElement | null>(null);
   const ref = videoRef ?? innerRef;
   const [needsTap, setNeedsTap] = useState(false);
@@ -42,7 +63,7 @@ export function VideoTile({ stream, label, muted = false, filterCss, videoRef, e
         autoPlay
         playsInline
         muted={muted}
-        className="h-full w-full -scale-x-100 object-cover"
+        className={`h-full w-full object-cover ${mirror ? "-scale-x-100" : ""}`}
         style={{ filter: filterCss }}
       />
 
@@ -60,6 +81,16 @@ export function VideoTile({ stream, label, muted = false, filterCss, videoRef, e
         >
           Ketuk untuk menyalakan suara
         </button>
+      )}
+
+      {quality && (
+        <span
+          className="absolute top-2 right-2 flex items-center gap-1.5 rounded-full bg-ink/70 px-2.5 py-1 text-xs font-medium text-paper"
+          title="Kualitas koneksi ke teman ini"
+        >
+          <span className={`h-2 w-2 rounded-full ${QUALITY_BADGE[quality].dot}`} aria-hidden="true" />
+          {QUALITY_BADGE[quality].text}
+        </span>
       )}
 
       <span className="absolute bottom-2 left-2 rounded-full bg-ink/70 px-3 py-1 text-xs font-medium text-paper">

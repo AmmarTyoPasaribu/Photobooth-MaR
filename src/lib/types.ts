@@ -10,6 +10,8 @@ export type BoothSettings = {
   filter: FilterId;
   shots: number;
   caption: string;
+  /** Lama hitung mundur per jepretan, dalam detik (`COUNTDOWN_OPTIONS`). */
+  countdown: number;
   /** "strip": semua jepretan dalam satu gambar. "single": satu gambar per jepretan. */
   format: ResultFormat;
   /** Background pengganti (`src/lib/backgrounds.ts`), atau "none" untuk latar asli. */
@@ -23,9 +25,17 @@ export type BoothSettings = {
 export type BoothMessage =
   /** `rev`: penghitung versi (Lamport) untuk room mode "all", supaya edit terbaru menang dan pendatang baru tidak menimpa. */
   | { type: "settings"; settings: BoothSettings; rev?: number }
-  /** `order`: id peserta sesuai urutan di strip, sama untuk semua orang. */
-  | { type: "start"; shots: number; order: string[] }
+  /**
+   * `order`: id peserta sesuai urutan di strip, sama untuk semua orang.
+   * `startAt`: waktu mulai hitung mundur menurut jam pengirim (ms epoch); penerima mengonversinya ke jamnya sendiri.
+   */
+  | { type: "start"; shots: number; order: string[]; startAt?: number; countdown?: number }
+  /** Ulangi satu jepretan (indeks 0-based) pada sesi yang sedang di tahap review. */
+  | { type: "retake"; index: number; startAt?: number; countdown?: number }
   | { type: "reset" }
+  /** Pengukuran selisih jam antar perangkat: `t` = jam pengirim ping, `r` = jam penjawab. */
+  | { type: "ping"; t: number }
+  | { type: "pong"; t: number; r: number }
   /** Peserta meminta host mengirim ulang pengaturan (mis. setelah host baru terverifikasi). */
   | { type: "sync" };
 
@@ -47,6 +57,9 @@ export type ConnectionStatus =
   | "connected" // minimal satu teman tersambung
   | "full"
   | "error";
+
+export const COUNTDOWN_OPTIONS = [3, 5, 10];
+export const DEFAULT_COUNTDOWN = 3;
 
 export const MIN_CAPACITY = 1;
 export const MAX_CAPACITY = 8;

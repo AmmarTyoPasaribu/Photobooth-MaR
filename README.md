@@ -1,4 +1,4 @@
-# Booth Bareng
+# Fotbar Bareng MaR
 
 Photobooth online untuk 1 sampai 8 orang di lokasi yang berbeda. Pembuat room memilih jumlah orang, mengirim tautannya ke teman-teman, lalu semua berfoto bareng lewat kamera masing-masing. Hitung mundur berjalan bersamaan, dan hasilnya satu strip foto (satu panel per jepretan, berisi foto semua orang) yang identik dan bisa diunduh di setiap perangkat.
 
@@ -66,6 +66,15 @@ Cara kerjanya:
 - Bila host tidak ada, mode mengikuti tautan (bawaan "host"). Di mode "Semua orang" sesi tetap bisa jalan tanpa host.
 - Pengaturan di mode "Semua orang" memakai penghitung versi (`rev`, gaya Lamport) pada pesan `settings`: edit terbaru menang, dan pendatang baru yang masih memakai bawaan tidak menimpa pengaturan yang sudah ada.
 - Bila dua orang menekan "Mulai foto" bersamaan, sesi yang dijalankan pertama di tiap perangkat yang dipakai. Sebaiknya satu orang saja yang memulai.
+
+## Hitung mundur serempak, ulang foto, kamera, dan kualitas koneksi
+
+- **Serempak:** tombol "Mulai foto" mengirim waktu mulai (jam host + 2 detik) ke semua teman. Tiap perangkat mengukur selisih jamnya dengan setiap teman lewat ping/pong di data channel (RTT terkecil menang), lalu menjadwalkan hitung mundur dan jepretan pada waktu absolut yang sama. Diuji dengan jam salah satu browser dimajukan 5 detik: selisih jepret antar perangkat hanya belasan milidetik.
+- **Lama hitung mundur:** 3, 5, atau 10 detik (pengaturan "Hitung mundur").
+- **Ulangi satu jepretan:** di tahap hasil, yang berhak mengatur bisa menekan "Ulang foto N". Hanya jepretan itu yang dipotret ulang, foto lain tetap.
+- **Ganti kamera:** tombol muncul bila perangkat punya lebih dari satu kamera. Video ke semua teman diganti lewat `replaceTrack`, tanpa menyambung ulang. Kamera belakang tidak dicerminkan.
+- **Kualitas koneksi:** tiap tile teman menampilkan "Lancar" atau "Lemah" (RTT > 400 ms atau paket hilang > 8%, diukur tiap 3 detik).
+- **Peringatan menutup tab:** bila ada hasil yang belum diunduh, browser menanyakan dulu karena tidak ada yang tersimpan di server.
 
 ## Layout hasil
 

@@ -7,10 +7,12 @@ export type ResultImage = { url: string; blob: Blob; name: string; label: string
 type Props = {
   images: ResultImage[];
   zipName: string;
+  /** Dipanggil saat gambar diunduh, supaya booth tahu mana yang sudah disimpan. */
+  onSaved?: (names: string[]) => void;
 };
 
 /** Menampilkan hasil foto: satu strip, atau satu gambar per jepretan dengan tombol unduh masing-masing. */
-export function ResultGallery({ images, zipName }: Props) {
+export function ResultGallery({ images, zipName, onSaved }: Props) {
   const [zipping, setZipping] = useState(false);
 
   const downloadAll = async () => {
@@ -29,6 +31,7 @@ export function ResultGallery({ images, zipName }: Props) {
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
+      onSaved?.(images.map((img) => img.name));
     } catch (err) {
       console.error("[zip]", err);
     } finally {
@@ -46,7 +49,7 @@ export function ResultGallery({ images, zipName }: Props) {
           alt={img.label}
           className="max-h-[75vh] w-auto max-w-full shadow-[0_30px_60px_-20px_rgb(0_0_0/0.55)]"
         />
-        <a href={img.url} download={img.name} className={PRIMARY}>
+        <a href={img.url} download={img.name} onClick={() => onSaved?.([img.name])} className={PRIMARY}>
           Unduh strip
         </a>
       </div>
@@ -67,6 +70,7 @@ export function ResultGallery({ images, zipName }: Props) {
             <a
               href={img.url}
               download={img.name}
+              onClick={() => onSaved?.([img.name])}
               className="rounded-full border-2 border-paper px-5 py-2 text-sm font-bold transition-colors hover:bg-paper hover:text-ink"
             >
               Unduh {img.label.toLowerCase()}

@@ -46,7 +46,14 @@ type PresenceMeta = {
 };
 
 /** Ringkasan satu peer untuk UI. */
-export type PeerView = { id: string; stream: MediaStream | null; connected: boolean; channelOpen: boolean };
+export type PeerView = {
+  id: string;
+  stream: MediaStream | null;
+  connected: boolean;
+  channelOpen: boolean;
+  /** Kualitas koneksi dari statistik WebRTC; null = belum terukur. */
+  quality: "good" | "weak" | null;
+};
 
 /** State per pasangan (aku ↔ peer) di topologi mesh. */
 type Peer = {
@@ -66,6 +73,9 @@ type Peer = {
   seen: boolean;
   /** Antrean kirim foto, agar potongan dua foto tidak tercampur di satu data channel. */
   sendQueue: Promise<void>;
+  quality: "good" | "weak" | null;
+  /** Pembacaan paket video sebelumnya, untuk menghitung persen paket hilang per selang. */
+  lastPackets: { lost: number; received: number } | null;
 };
 
 type Stage = "media" | "joining" | "admitted" | "full" | "error";
@@ -81,6 +91,11 @@ const LEAVE_GRACE_MS = 4000;
 
 /** Waktu tunggu sebelum ICE restart pada koneksi yang berstatus "disconnected". */
 const DISCONNECT_RESTART_MS = 3000;
+
+/** Selang pengukuran kualitas koneksi, dan ambang "lemah". */
+const STATS_INTERVAL_MS = 3000;
+const WEAK_RTT_MS = 400;
+const WEAK_LOSS = 0.08;
 
 const BITRATE_BUDGET = 1_500_000;
 const BITRATE_MIN = 150_000;
@@ -163,6 +178,10 @@ export function usePeerRoom(
   const [members, setMembers] = useState<string[]>([]);
   const [peers, setPeers] = useState<Record<string, PeerView>>({});
   const [micOn, setMicOn] = useState(true);
+  const [cameraCount, setCameraCount] = useState(0);
+  /** "environment" = kamera belakang (tidak dicerminkan); selain itu dicerminkan seperti selfie. */
+  const [facing, setFacing] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
   /** Browser ini memegang kunci host untuk room ini. */
   const [amHost, setAmHost] = useState(false);
   /** Peer id host terverifikasi yang sedang ada di room. */
@@ -176,6 +195,17 @@ export function usePeerRoom(
   const handlersRef = useRef(handlers);
   const peersRef = useRef<Map<string, Peer>>(new Map());
   const localRef = useRef<MediaStream | null>(null);
+  const cameraIdsRef = useRef<string[]>([]);
+
+  const refreshCameras = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      cameraIdsRef.current = devices.filter((d) => d.kind === "videoinput").map((d) => d.deviceId);
+      setCameraCount(cameraIdsRef.current.length);
+    } catch {
+      /* tombol ganti kamera tidak muncul */
+    }
+  }, []);
 
   useEffect(() => {
     handlersRef.current = handlers;
@@ -244,6 +274,7 @@ export function usePeerRoom(
           stream: p.stream,
           connected: p.connected,
           channelOpen: p.dc?.readyState === "open",
+          quality: p.quality,
         };
       }
       setPeers(views);
@@ -360,6 +391,8 @@ export function usePeerRoom(
         connected: false,
         seen: false,
         sendQueue: Promise.resolve(),
+        quality: null,
+        lastPackets: null,
       };
       earlyCandidates.delete(otherId);
       peerMap.set(otherId, peer);
@@ -632,6 +665,8 @@ export function usePeerRoom(
         }
         localRef.current = stream;
         setLocalStream(stream);
+        setFacing(stream.getVideoTracks()[0]?.getSettings().facingMode ?? null);
+        void refreshCameras();
 
         setStage("joining");
         try {
@@ -691,6 +726,40 @@ export function usePeerRoom(
       }
     })();
 
+    // ── Kualitas koneksi per teman (RTT dan paket hilang) ───────
+    const pollQuality = async () => {
+      for (const peer of [...peerMap.values()]) {
+        if (peer.pc.connectionState !== "connected") continue;
+        try {
+          const report = await peer.pc.getStats();
+          let rtt: number | null = null;
+          let lost = 0;
+          let received = 0;
+          report.forEach((entry: Record<string, unknown>) => {
+            if (entry.type === "candidate-pair" && entry.state === "succeeded" && typeof entry.currentRoundTripTime === "number") {
+              rtt = entry.currentRoundTripTime * 1000;
+            } else if (entry.type === "inbound-rtp" && entry.kind === "video") {
+              lost = Number(entry.packetsLost) || 0;
+              received = Number(entry.packetsReceived) || 0;
+            }
+          });
+          const prev = peer.lastPackets;
+          peer.lastPackets = { lost, received };
+          const dLost = prev ? Math.max(0, lost - prev.lost) : 0;
+          const dReceived = prev ? Math.max(0, received - prev.received) : 0;
+          const loss = dLost + dReceived > 0 ? dLost / (dLost + dReceived) : 0;
+          const quality = (rtt !== null && rtt > WEAK_RTT_MS) || loss > WEAK_LOSS ? "weak" : "good";
+          if (peerMap.get(peer.id) === peer && peer.quality !== quality) {
+            peer.quality = quality;
+            publish();
+          }
+        } catch {
+          /* statistik tidak tersedia, biarkan */
+        }
+      }
+    };
+    const statsTimer = setInterval(() => void pollQuality(), STATS_INTERVAL_MS);
+
     const onPageHide = () => {
       void channel?.untrack();
     };
@@ -700,6 +769,7 @@ export function usePeerRoom(
       cancelled = true;
       finished = true;
       window.removeEventListener("pagehide", onPageHide);
+      clearInterval(statsTimer);
       timers.forEach(clearTimeout);
       if (outboxTimer) clearTimeout(outboxTimer);
       for (const peerId of [...peerMap.keys()]) closePeer(peerId);
@@ -708,7 +778,48 @@ export function usePeerRoom(
       localRef.current = null;
       setLocalStream(null);
     };
-  }, [roomId, capacityParam, modeParam]);
+  }, [roomId, capacityParam, modeParam, refreshCameras]);
+
+  /** Berpindah ke kamera berikutnya; video ke semua teman diganti tanpa menyambung ulang. */
+  const switchCamera = useCallback(async () => {
+    const local = localRef.current;
+    const ids = cameraIdsRef.current;
+    if (!local || ids.length < 2 || switching) return;
+    setSwitching(true);
+    const oldTrack = local.getVideoTracks()[0];
+    const currentId = oldTrack?.getSettings().deviceId ?? "";
+    const open = async (deviceId: string) => {
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 960 }, aspectRatio: { ideal: 4 / 3 } },
+      });
+      return s.getVideoTracks()[0];
+    };
+    const next = ids[(Math.max(0, ids.indexOf(currentId)) + 1) % ids.length];
+    try {
+      // Beberapa HP hanya bisa membuka satu kamera sekali waktu, jadi yang lama dilepas dulu.
+      oldTrack?.stop();
+      let track: MediaStreamTrack;
+      try {
+        track = await open(next);
+      } catch (err) {
+        console.warn("[camera] gagal ganti, kembali ke kamera sebelumnya", err);
+        track = await open(currentId || ids[0]);
+      }
+      for (const peer of peersRef.current.values()) {
+        const sender = peer.pc.getSenders().find((s) => s.track?.kind === "video" || s.track === null);
+        await sender?.replaceTrack(track).catch((err) => console.warn("[camera] replaceTrack", err));
+      }
+      const stream = new MediaStream([track, ...local.getAudioTracks()]);
+      localRef.current = stream;
+      setLocalStream(stream);
+      setFacing(track.getSettings().facingMode ?? null);
+      void refreshCameras();
+    } catch (err) {
+      console.error("[camera]", err);
+    } finally {
+      setSwitching(false);
+    }
+  }, [switching, refreshCameras]);
 
   const send = useCallback((message: BoothMessage) => {
     const data = JSON.stringify(message);
@@ -765,6 +876,11 @@ export function usePeerRoom(
     openCount: peerList.filter((p) => p.channelOpen).length,
     localStream,
     micOn,
+    cameraCount,
+    switching,
+    /** Cerminkan tampilan dan foto lokal (kamera depan/webcam). */
+    mirror: facing !== "environment",
+    switchCamera,
     send,
     sendTo,
     sendPhoto,

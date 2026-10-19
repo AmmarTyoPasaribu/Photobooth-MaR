@@ -13,7 +13,9 @@ import { makePersonMask, preloadSegmenter } from "@/lib/segment";
 import { composeStrip, FILTERS } from "@/lib/strip";
 import type { BlobKind } from "@/lib/transfer";
 import {
+  COUNTDOWN_OPTIONS,
   DEFAULT_CAPACITY,
+  DEFAULT_COUNTDOWN,
   MAX_CAPACITY,
   type BoothMessage,
   type BoothSettings,
@@ -35,12 +37,19 @@ const PHOTO_TIMEOUT_MS = 12_000;
 const CAPTION_MAX = 28;
 const TILE_GAP = 12;
 const STAGE_PAD = 12;
+/** Jeda dari tombol "Mulai" sampai hitung mundur, memberi waktu pesan sampai ke semua teman. */
+const LEAD_MS = 2000;
+/** Jeda antar jepretan setelah foto diambil. */
+const SHOT_REST_MS = 1500;
+/** Jumlah ping per teman untuk mengukur selisih jam. */
+const CLOCK_PINGS = 5;
 
 function defaultsFor(people: number): BoothSettings {
   return {
     frame: DEFAULT_FRAME_ID,
     filter: "none",
     shots: defaultShotsFor(people),
+    countdown: DEFAULT_COUNTDOWN,
     caption: "kita",
     format: defaultFormatFor(people),
     background: NO_BACKGROUND,
@@ -63,6 +72,10 @@ function statusText(status: ConnectionStatus, canControl: boolean): string {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Tidur sampai waktu absolut `t` (jam perangkat ini), supaya jadwal tidak melenceng oleh kerja di antaranya. */
+const sleepUntil = (t: number) => sleep(Math.max(0, t - Date.now()));
+const pickCountdown = (value: unknown, fallback: number) =>
+  typeof value === "number" && COUNTDOWN_OPTIONS.includes(value) ? value : fallback;
 const emptyShots = (n: number) => Array<Blob | null>(n).fill(null);
 const hasOwn = (obj: object, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
 const revokeAll = (prev: ResultImage[]) => {
@@ -90,6 +103,7 @@ function sanitizeSettings(value: unknown): BoothSettings | null {
     frame: s.frame,
     filter: s.filter as FilterId,
     shots,
+    countdown: pickCountdown(Number(s.countdown), DEFAULT_COUNTDOWN),
     caption: String(s.caption ?? "").slice(0, CAPTION_MAX),
     format: s.format === "single" ? "single" : "strip",
     background: typeof s.background === "string" && hasOwn(BACKGROUNDS, s.background) ? s.background : NO_BACKGROUND,
@@ -136,6 +150,9 @@ export function Booth({
   const maskJobsRef = useRef(new Set<number>());
   /** Versi pengaturan (penghitung Lamport) untuk room yang semua anggotanya boleh mengatur. */
   const settingsRevRef = useRef(0);
+  /** Selisih jam tiap teman terhadap jamku (ms, positif = jam teman lebih maju), dari ping/pong dengan RTT terkecil. */
+  const clockRef = useRef(new Map<string, { offset: number; rtt: number }>());
+  const [savedNames, setSavedNames] = useState<Set<string>>(() => new Set());
   const ctxRef = useRef<{
     myId: string | null;
     hostId: string | null;
@@ -143,6 +160,8 @@ export function Booth({
     openControl: boolean;
     canControl: boolean;
     settings: BoothSettings;
+    /** Cerminkan foto lokal (kamera depan). */
+    mirror: boolean;
     sendTo: (peerId: string, message: BoothMessage) => void;
     sendPhoto: (index: number, blob: Blob, kind?: BlobKind) => void;
   }>({
@@ -151,6 +170,7 @@ export function Booth({
     openControl: false,
     canControl: false,
     settings: defaultsFor(DEFAULT_CAPACITY),
+    mirror: true,
     sendTo: () => undefined,
     sendPhoto: () => undefined,
   });
@@ -169,53 +189,122 @@ export function Booth({
     setResults(revokeAll);
   }, []);
 
-  const runSession = useCallback(async (shots: number, order: string[]) => {
-    if (runningRef.current) return;
-    runningRef.current = true;
-    const next = { shots, order };
-    sessionRef.current = next;
-    setSession(next);
-    setPhotos(new Map(order.map((id) => [id, emptyShots(shots)])));
-    setMasks(new Map());
-    maskJobsRef.current = new Set();
-    setTimedOut(false);
-    setResults(revokeAll);
-    setPhase("shooting");
-
-    try {
-      for (let i = 0; i < shots; i++) {
-        setShotIndex(i);
-        for (const n of [3, 2, 1]) {
-          setCount(n);
-          await sleep(1000);
-        }
-        setCount(null);
-        setFlashKey((k) => k + 1);
-
-        // Foto selalu diambil dari kamera lokal dalam resolusi penuh, bukan dari stream WebRTC.
-        const video = localVideoRef.current;
-        const myId = ctxRef.current.myId;
-        if (video && myId) {
-          try {
-            const blob = await captureFrame(video);
-            setPhotos((prev) => withPhoto(prev, myId, i, blob, shots));
-            ctxRef.current.sendPhoto(i, blob);
-          } catch (err) {
-            console.error("[capture]", err);
-          }
-        }
-        await sleep(900);
-      }
-    } finally {
-      runningRef.current = false;
-      setCount(null);
-      setPhase("review");
-    }
+  /** Waktu mulai dari jam pengirim diubah ke jam perangkat ini memakai selisih jam hasil ping. */
+  const toLocalStart = useCallback((from: string, startAt: unknown): number => {
+    const now = Date.now();
+    if (typeof startAt !== "number" || !Number.isFinite(startAt)) return now + 500;
+    const clock = clockRef.current.get(from);
+    const local = clock ? startAt - clock.offset : now + Math.max(0, LEAD_MS - 400);
+    return Math.min(Math.max(local, now + 200), now + 15_000);
   }, []);
+
+  /**
+   * Hitung mundur dan jepret untuk `indices`. Semua waktu dijadwalkan absolut dari `t0` (jam perangkat ini),
+   * jadi jepretan jatuh pada saat yang sama di semua perangkat.
+   */
+  const shootLoop = useCallback(async (indices: number[], shots: number, t0: number, countdown: number) => {
+    const period = countdown * 1000 + SHOT_REST_MS;
+    for (const [k, i] of indices.entries()) {
+      setShotIndex(i);
+      const captureAt = t0 + k * period + countdown * 1000;
+      for (let n = countdown; n >= 1; n--) {
+        await sleepUntil(captureAt - n * 1000);
+        setCount(n);
+      }
+      await sleepUntil(captureAt);
+      setCount(null);
+      setFlashKey((key) => key + 1);
+
+      // Foto selalu diambil dari kamera lokal dalam resolusi penuh, bukan dari stream WebRTC.
+      const video = localVideoRef.current;
+      const myId = ctxRef.current.myId;
+      if (video && myId) {
+        try {
+          const blob = await captureFrame(video, ctxRef.current.mirror);
+          setPhotos((prev) => withPhoto(prev, myId, i, blob, shots));
+          ctxRef.current.sendPhoto(i, blob);
+        } catch (err) {
+          console.error("[capture]", err);
+        }
+      }
+    }
+    await sleep(900);
+  }, []);
+
+  const runSession = useCallback(
+    async (shots: number, order: string[], t0: number, countdown: number) => {
+      if (runningRef.current) return;
+      runningRef.current = true;
+      const next = { shots, order };
+      sessionRef.current = next;
+      setSession(next);
+      setPhotos(new Map(order.map((id) => [id, emptyShots(shots)])));
+      setMasks(new Map());
+      maskJobsRef.current = new Set();
+      setTimedOut(false);
+      setResults(revokeAll);
+      setPhase("shooting");
+
+      try {
+        await shootLoop(Array.from({ length: shots }, (_, i) => i), shots, t0, countdown);
+      } finally {
+        runningRef.current = false;
+        setCount(null);
+        setPhase("review");
+      }
+    },
+    [shootLoop],
+  );
+
+  /** Mengulang satu jepretan pada sesi yang sedang di tahap review; foto lain tetap. */
+  const runRetake = useCallback(
+    async (index: number, t0: number, countdown: number) => {
+      const current = sessionRef.current;
+      if (!current || runningRef.current) return;
+      runningRef.current = true;
+      const clearShot = (prev: Photos) => {
+        const next = new Map(prev);
+        for (const id of current.order) {
+          const list = (next.get(id) ?? emptyShots(current.shots)).slice();
+          list[index] = null;
+          next.set(id, list);
+        }
+        return next;
+      };
+      setPhotos(clearShot);
+      setMasks(clearShot);
+      maskJobsRef.current.delete(index);
+      setTimedOut(false);
+      setResults(revokeAll);
+      setPhase("shooting");
+
+      try {
+        await shootLoop([index], current.shots, t0, countdown);
+      } finally {
+        runningRef.current = false;
+        setCount(null);
+        setPhase("review");
+      }
+    },
+    [shootLoop],
+  );
 
   const onMessage = useCallback(
     (from: string, message: BoothMessage) => {
       const ctx = ctxRef.current;
+      // Pengukuran jam: boleh dari siapa pun, tidak mengubah state booth.
+      if (message.type === "ping") {
+        if (typeof message.t === "number") ctx.sendTo(from, { type: "pong", t: message.t, r: Date.now() });
+        return;
+      }
+      if (message.type === "pong") {
+        if (typeof message.t !== "number" || typeof message.r !== "number") return;
+        const rtt = Date.now() - message.t;
+        if (rtt < 0 || rtt > 5000) return;
+        const best = clockRef.current.get(from);
+        if (!best || rtt < best.rtt) clockRef.current.set(from, { offset: message.r - (message.t + rtt / 2), rtt });
+        return;
+      }
       if (message.type === "sync") {
         // Peserta meminta pengaturan terkini; hanya yang berhak mengatur yang menjawab.
         // Di room terbuka, anggota yang belum pernah mengatur/menerima pengaturan tidak menjawab (isinya hanya bawaan).
@@ -243,12 +332,22 @@ export function Booth({
         const order = Array.isArray(message.order)
           ? message.order.filter((id): id is string => typeof id === "string").slice(0, MAX_CAPACITY)
           : [];
-        if (order.length) void runSession(shots, order);
+        if (order.length) {
+          const countdown = pickCountdown(message.countdown, ctx.settings.countdown);
+          void runSession(shots, order, toLocalStart(from, message.startAt), countdown);
+        }
+      } else if (message.type === "retake") {
+        const index = Number(message.index);
+        const current = sessionRef.current;
+        if (current && Number.isInteger(index) && index >= 0 && index < current.shots) {
+          const countdown = pickCountdown(message.countdown, ctx.settings.countdown);
+          void runRetake(index, toLocalStart(from, message.startAt), countdown);
+        }
       } else if (message.type === "reset") {
         resetSession();
       }
     },
-    [runSession, resetSession],
+    [runSession, runRetake, resetSession, toLocalStart],
   );
 
   const onPhoto = useCallback((from: string, index: number, blob: Blob, kind: BlobKind) => {
@@ -260,6 +359,10 @@ export function Booth({
 
   // Host mengirim pengaturan terkini ke setiap data channel yang baru terbuka.
   const onChannelOpen = useCallback((peerId: string) => {
+    // Ukur selisih jam dengan teman ini (dipakai untuk hitung mundur serempak).
+    for (let k = 0; k < CLOCK_PINGS; k++) {
+      setTimeout(() => ctxRef.current.sendTo(peerId, { type: "ping", t: Date.now() }), k * 150);
+    }
     const ctx = ctxRef.current;
     if (!ctx.canControl) return;
     // Di room terbuka, pendatang baru (yang masih bawaan) tidak boleh menimpa pengaturan yang sudah ada.
@@ -288,6 +391,7 @@ export function Booth({
       openControl,
       canControl,
       settings,
+      mirror: room.mirror,
       sendTo: room.sendTo,
       sendPhoto: room.sendPhoto,
     };
@@ -370,7 +474,7 @@ export function Booth({
               caption,
             }).then((blob) => ({
               blob,
-              name: `booth-bareng-${roomId}.png`,
+              name: `fotbar-mar-${roomId}.png`,
               label: "Strip foto kalian",
             })),
           ]
@@ -386,12 +490,13 @@ export function Booth({
               caption,
               shotOffset: s,
               totalShots: session.shots,
-            }).then((blob) => ({ blob, name: `booth-bareng-${roomId}-${s + 1}.png`, label: `Foto ${s + 1}` })),
+            }).then((blob) => ({ blob, name: `fotbar-mar-${roomId}-${s + 1}.png`, label: `Foto ${s + 1}` })),
           );
 
     Promise.all(jobs)
       .then((list) => {
         if (cancelled) return;
+        setSavedNames(new Set());
         setResults((prev) => {
           prev.forEach((r) => URL.revokeObjectURL(r.url));
           return list.map((r) => ({ ...r, url: URL.createObjectURL(r.blob) }));
@@ -402,6 +507,18 @@ export function Booth({
       cancelled = true;
     };
   }, [phase, session, allArrived, timedOut, photos, masks, background, frame, filter, caption, format, roomId]);
+
+  // Tidak ada yang tersimpan di server: ingatkan bila masih ada hasil yang belum diunduh.
+  const unsaved = phase === "review" && results.some((r) => !savedNames.has(r.name));
+  useEffect(() => {
+    if (!unsaved) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsaved]);
 
   const updateSettings = (patch: Partial<BoothSettings>) => {
     if (!canControl) return;
@@ -419,9 +536,22 @@ export function Booth({
     // Hanya peserta yang tersambung denganku yang ikut, urutannya sama dengan urutan anggota.
     const order = room.members.filter((id) => id === room.myId || room.peers[id]?.channelOpen);
     if (!order.includes(room.myId)) order.push(room.myId);
-    send({ type: "start", shots: settings.shots, order });
-    void runSession(settings.shots, order);
+    // Semua perangkat mulai pada waktu yang sama: jam host + jeda, dikonversi tiap penerima ke jamnya sendiri.
+    const t0 = Date.now() + LEAD_MS;
+    send({ type: "start", shots: settings.shots, order, startAt: t0, countdown: settings.countdown });
+    void runSession(settings.shots, order, t0, settings.countdown);
   };
+
+  const countdownSetting = settings.countdown;
+  const retake = useCallback(
+    (index: number) => {
+      if (!canControl || phase !== "review" || runningRef.current) return;
+      const t0 = Date.now() + LEAD_MS;
+      send({ type: "retake", index, startAt: t0, countdown: countdownSetting });
+      void runRetake(index, t0, countdownSetting);
+    },
+    [canControl, phase, send, runRetake, countdownSetting],
+  );
 
   const again = () => {
     if (!canControl) return;
@@ -433,7 +563,7 @@ export function Booth({
     const url = window.location.href;
     try {
       if (navigator.share) {
-        await navigator.share({ title: "Booth Bareng", text: "Ayo foto bareng!", url });
+        await navigator.share({ title: "Fotbar Bareng MaR", text: "Ayo foto bareng!", url });
         return;
       }
       await navigator.clipboard.writeText(url);
@@ -497,6 +627,7 @@ export function Booth({
       muted
       filterCss={filterCss}
       videoRef={localVideoRef}
+      mirror={room.mirror}
       emptyText="Menyalakan kamera…"
       aspect={layout.aspect}
       style={{ width: tileWidth }}
@@ -516,6 +647,7 @@ export function Booth({
         label={isHostTile ? "Pembuat room" : `Orang ke-${position}`}
         filterCss={filterCss}
         emptyText={id ? (peer ? "Menyambungkan…" : "Terputus") : `Menunggu orang ke-${position}…`}
+        quality={peer ? (peer.connected ? (peer.quality ?? "good") : "connecting") : undefined}
         aspect={layout.aspect}
         style={{ width: tileWidth }}
       />
@@ -553,6 +685,18 @@ export function Booth({
   const stripShots = inSession ? session.shots : settings.shots;
   const thumbShots = settings.format === "single" ? 1 : stripShots;
 
+  const cameraButton =
+    room.cameraCount > 1 ? (
+      <button
+        type="button"
+        onClick={room.switchCamera}
+        disabled={!room.localStream || room.switching || shooting}
+        className="rounded-full border-2 border-paper/60 px-5 py-3 text-sm font-bold transition-colors hover:bg-paper hover:text-ink disabled:opacity-40"
+      >
+        {room.switching ? "Mengganti…" : "Ganti kamera"}
+      </button>
+    ) : null;
+
   const micButton = (
     <button
       type="button"
@@ -568,7 +712,7 @@ export function Booth({
     <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 py-5 md:px-8 md:py-7">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <Link href="/" className="font-display text-2xl font-bold">
-          Booth Bareng
+          Fotbar Bareng MaR
         </Link>
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-curtain-deep px-4 py-2 font-mono text-sm tracking-wide">{roomId}</span>
@@ -585,7 +729,7 @@ export function Booth({
       {room.legacyRoom && (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-flash/70 bg-curtain-deep/70 px-5 py-3">
           <p className="max-w-[60ch] text-sm text-paper/90">
-            Room ini dibuat dengan versi lama Booth Bareng, jadi semua orang bisa mengatur dan memulai foto. Buat room
+            Room ini dibuat dengan versi lama Fotbar Bareng MaR, jadi semua orang bisa mengatur dan memulai foto. Buat room
             baru supaya hanya pembuat room yang memegang kendali.
           </p>
           <Link href="/" className="rounded-full bg-flash px-5 py-2 text-sm font-bold text-ink">
@@ -634,9 +778,30 @@ export function Booth({
       {phase === "review" && (
         <section className="flex flex-col items-center gap-5" aria-label="Hasil foto">
           {results.length ? (
-            <ResultGallery images={results} zipName={`booth-bareng-${roomId}.zip`} />
+            <ResultGallery
+              images={results}
+              zipName={`fotbar-mar-${roomId}.zip`}
+              onSaved={(names) => setSavedNames((prev) => new Set([...prev, ...names]))}
+            />
           ) : (
             <p className="py-16 text-center text-paper/85">Menunggu foto dari teman-temanmu…</p>
+          )}
+          {canControl && session && results.length > 0 && (
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-sm text-paper/80">Kurang puas dengan salah satu foto?</span>
+              <div className="flex flex-wrap justify-center gap-2">
+                {Array.from({ length: session.shots }, (_, i) => (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => retake(i)}
+                    className="rounded-full border-2 border-paper/50 px-4 py-2 text-sm font-bold transition-colors hover:bg-paper hover:text-ink"
+                  >
+                    Ulang foto {i + 1}
+                  </button>
+                ))}
+              </div>
+            </div>
           )}
           {canControl && (
             <button
@@ -711,6 +876,21 @@ export function Booth({
             </div>
           </Field>
 
+          <Field label="Hitung mundur">
+            <div className="flex flex-wrap gap-2">
+              {COUNTDOWN_OPTIONS.map((n) => (
+                <Chip
+                  key={n}
+                  pressed={settings.countdown === n}
+                  disabled={shooting}
+                  onClick={() => updateSettings({ countdown: n })}
+                >
+                  {n} detik
+                </Chip>
+              ))}
+            </div>
+          </Field>
+
           <div className="md:col-span-2">
             <Field label="Background">
               <div className="flex flex-wrap gap-2">
@@ -761,6 +941,7 @@ export function Booth({
               </button>
             )}
             {micButton}
+            {cameraButton}
             {phase === "idle" && !canStart && !solo && (
               <span className="text-sm text-paper/70">Tombol foto aktif setelah minimal satu teman tersambung.</span>
             )}
@@ -768,16 +949,18 @@ export function Booth({
         </section>
       ) : (
         <section className="flex flex-col gap-5 rounded-3xl bg-curtain-deep/70 p-5 md:p-7" aria-label="Pengaturan dari pembuat room">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-7">
             <Summary label="Bingkai" value={theme.label} swatch={theme.bg} />
             <Summary label="Filter" value={FILTERS[settings.filter].label} />
             <Summary label="Jumlah foto" value={`${settings.shots} foto`} />
             <Summary label="Format" value={FORMATS[settings.format]} />
+            <Summary label="Hitung mundur" value={`${settings.countdown} detik`} />
             <Summary label="Background" value={getBackground(settings.background)?.label ?? "Asli"} />
             <Summary label="Tulisan" value={settings.caption.trim() || "kita"} />
           </dl>
           <div className="flex flex-wrap items-center gap-4">
             {micButton}
+            {cameraButton}
             {phase === "idle" && <span className="text-sm text-paper/80">Menunggu pembuat room memulai foto.</span>}
           </div>
         </section>
