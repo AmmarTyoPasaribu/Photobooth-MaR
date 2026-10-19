@@ -6,6 +6,10 @@ import { useBoxSize } from "@/hooks/useBoxSize";
 import { usePeerRoom } from "@/hooks/usePeerRoom";
 import { BACKGROUND_LIST, BACKGROUNDS, getBackground, NO_BACKGROUND } from "@/lib/backgrounds";
 import { captureFrame } from "@/lib/capture";
+import { detectFace, preloadFaceLandmarker } from "@/lib/face";
+import { EFFECT_LIST, EFFECTS, isEffect, NO_EFFECT } from "@/lib/face-effects";
+import { compactFace, cropToPhoto, flipFace, sanitizeFace, type Face } from "@/lib/face-math";
+import { FaceStore } from "@/lib/face-store";
 import { DEFAULT_FRAME_ID, FRAMES, getFrame } from "@/lib/frames";
 import { acceptsControlMessage, readHostSettings, saveHostSettings, type RoomMode } from "@/lib/host";
 import { defaultFormatFor, defaultShotsFor, getLayout, type ResultFormat } from "@/lib/layout";
@@ -22,6 +26,7 @@ import {
   type ConnectionStatus,
   type FilterId,
 } from "@/lib/types";
+import { Brand } from "./Brand";
 import { DecorTile } from "./DecorTile";
 import { FramePicker } from "./FramePicker";
 import { ResultGallery, type ResultImage } from "./ResultGallery";
@@ -30,6 +35,8 @@ import { VideoTile } from "./VideoTile";
 type Phase = "idle" | "shooting" | "review";
 type Session = { order: string[]; shots: number };
 type Photos = Map<string, (Blob | null)[]>;
+/** Wajah per peserta per jepretan; "none" = sudah dicek dan tidak ada wajah, null = belum datang. */
+type Faces = Map<string, (Face | "none" | null)[]>;
 
 const SHOT_OPTIONS = [1, 2, 3, 4];
 const FORMATS: Record<ResultFormat, string> = { strip: "Strip", single: "Per jepretan" };
@@ -43,6 +50,8 @@ const LEAD_MS = 2000;
 const SHOT_REST_MS = 1500;
 /** Jumlah ping per teman untuk mengukur selisih jam. */
 const CLOCK_PINGS = 5;
+/** Selang deteksi wajah untuk efek di kamera langsung (±9 kali per detik). */
+const LIVE_FACE_MS = 110;
 
 function defaultsFor(people: number): BoothSettings {
   return {
@@ -53,6 +62,7 @@ function defaultsFor(people: number): BoothSettings {
     caption: "kita",
     format: defaultFormatFor(people),
     background: NO_BACKGROUND,
+    effect: NO_EFFECT,
   };
 }
 
@@ -107,7 +117,31 @@ function sanitizeSettings(value: unknown): BoothSettings | null {
     caption: String(s.caption ?? "").slice(0, CAPTION_MAX),
     format: s.format === "single" ? "single" : "strip",
     background: typeof s.background === "string" && hasOwn(BACKGROUNDS, s.background) ? s.background : NO_BACKGROUND,
+    effect: typeof s.effect === "string" && hasOwn(EFFECTS, s.effect) ? s.effect : NO_EFFECT,
   };
+}
+
+function withFace(prev: Faces, id: string, index: number, face: Face | "none", shots: number): Faces {
+  const next = new Map(prev);
+  const list = (next.get(id) ?? Array<Face | "none" | null>(Math.max(shots, index + 1)).fill(null)).slice();
+  list[index] = face;
+  next.set(id, list);
+  return next;
+}
+
+function completeFaces(map: Faces, order: string[], shots: number) {
+  return order.every((id) => {
+    const list = map.get(id);
+    return !!list && list.length >= shots && list.slice(0, shots).every((v) => v !== null && v !== undefined);
+  });
+}
+
+/** Wajah pada foto yang akan dipotret: koordinat foto (crop 4:3), arah sama dengan foto (dicermin bila selfie). */
+function photoFaceFrom(video: HTMLVideoElement, mirror: boolean): Face | null {
+  const raw = detectFace(video);
+  if (!raw) return null;
+  const cropped = cropToPhoto(raw, video.videoWidth, video.videoHeight);
+  return mirror ? flipFace(cropped) : cropped;
 }
 
 /** Semua orang di `order` punya item untuk setiap jepretan. */
@@ -137,6 +171,9 @@ export function Booth({
   const [photos, setPhotos] = useState<Photos>(() => new Map());
   /** Masker orang per peserta per jepretan, untuk background pengganti. */
   const [masks, setMasks] = useState<Photos>(() => new Map());
+  const [faces, setFaces] = useState<Faces>(() => new Map());
+  /** Wajah terbaru tiap tile untuk efek di kamera langsung (tidak memicu render). */
+  const [faceStore] = useState(() => new FaceStore());
   const [timedOut, setTimedOut] = useState(false);
   const [results, setResults] = useState<ResultImage[]>([]);
   const [shareNote, setShareNote] = useState<string | null>(null);
@@ -164,6 +201,7 @@ export function Booth({
     mirror: boolean;
     sendTo: (peerId: string, message: BoothMessage) => void;
     sendPhoto: (index: number, blob: Blob, kind?: BlobKind) => void;
+    send: (message: BoothMessage) => void;
   }>({
     myId: null,
     hostId: null,
@@ -173,6 +211,7 @@ export function Booth({
     mirror: true,
     sendTo: () => undefined,
     sendPhoto: () => undefined,
+    send: () => undefined,
   });
 
   const box = useBoxSize(stageBoxRef);
@@ -184,6 +223,7 @@ export function Booth({
     setPhase("idle");
     setPhotos(new Map());
     setMasks(new Map());
+    setFaces(new Map());
     maskJobsRef.current = new Set();
     setTimedOut(false);
     setResults(revokeAll);
@@ -220,7 +260,16 @@ export function Booth({
       const myId = ctxRef.current.myId;
       if (video && myId) {
         try {
+          // Wajah dideteksi pada frame yang sama dengan foto, sebelum frame berikutnya datang.
+          const wantFace = isEffect(ctxRef.current.settings.effect);
+          // Dibulatkan seperti yang dikirim ke teman, supaya posisi efek identik di semua perangkat.
+          const detected = wantFace ? photoFaceFrom(video, ctxRef.current.mirror) : null;
+          const face = detected ? compactFace(detected) : null;
           const blob = await captureFrame(video, ctxRef.current.mirror);
+          if (wantFace) {
+            setFaces((prev) => withFace(prev, myId, i, face ?? "none", shots));
+            ctxRef.current.send({ type: "face", index: i, face });
+          }
           setPhotos((prev) => withPhoto(prev, myId, i, blob, shots));
           ctxRef.current.sendPhoto(i, blob);
         } catch (err) {
@@ -240,6 +289,7 @@ export function Booth({
       setSession(next);
       setPhotos(new Map(order.map((id) => [id, emptyShots(shots)])));
       setMasks(new Map());
+      setFaces(new Map());
       maskJobsRef.current = new Set();
       setTimedOut(false);
       setResults(revokeAll);
@@ -273,6 +323,15 @@ export function Booth({
       };
       setPhotos(clearShot);
       setMasks(clearShot);
+      setFaces((prev) => {
+        const next = new Map(prev);
+        for (const id of current.order) {
+          const list = (next.get(id) ?? Array<Face | "none" | null>(current.shots).fill(null)).slice();
+          list[index] = null;
+          next.set(id, list);
+        }
+        return next;
+      });
       maskJobsRef.current.delete(index);
       setTimedOut(false);
       setResults(revokeAll);
@@ -303,6 +362,17 @@ export function Booth({
         if (rtt < 0 || rtt > 5000) return;
         const best = clockRef.current.get(from);
         if (!best || rtt < best.rtt) clockRef.current.set(from, { offset: message.r - (message.t + rtt / 2), rtt });
+        return;
+      }
+      if (message.type === "face-live") {
+        faceStore.set(from, sanitizeFace(message.face));
+        return;
+      }
+      if (message.type === "face") {
+        const index = Number(message.index);
+        if (!Number.isInteger(index) || index < 0 || index >= SHOT_OPTIONS.length) return;
+        const shots = sessionRef.current?.shots ?? index + 1;
+        setFaces((prev) => withFace(prev, from, index, sanitizeFace(message.face) ?? "none", shots));
         return;
       }
       if (message.type === "sync") {
@@ -347,7 +417,7 @@ export function Booth({
         resetSession();
       }
     },
-    [runSession, runRetake, resetSession, toLocalStart],
+    [runSession, runRetake, resetSession, toLocalStart, faceStore],
   );
 
   const onPhoto = useCallback((from: string, index: number, blob: Blob, kind: BlobKind) => {
@@ -394,6 +464,7 @@ export function Booth({
       mirror: room.mirror,
       sendTo: room.sendTo,
       sendPhoto: room.sendPhoto,
+      send: room.send,
     };
   });
 
@@ -410,6 +481,33 @@ export function Booth({
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     stageRef.current?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
   }, [phase]);
+
+  const effectId = settings.effect;
+  const effectOn = isEffect(effectId);
+
+  // Model wajah mulai diunduh begitu host memilih efek, supaya siap saat memotret.
+  useEffect(() => {
+    if (effectOn) preloadFaceLandmarker();
+  }, [effectOn]);
+
+  // Efek di kamera langsung: wajah dideteksi di sini, lalu dikirim ke teman supaya mereka bisa menggambar efeknya di tile-ku.
+  const hasLocalStream = !!room.localStream;
+  useEffect(() => {
+    if (!effectOn || !hasLocalStream) return;
+    const timer = setInterval(() => {
+      const video = localVideoRef.current;
+      if (!video) return;
+      const raw = detectFace(video);
+      const selfie = raw ? flipFace(raw) : null; // arah selfie: dikirim ke teman (tile mereka selalu dicermin)
+      faceStore.set("local", ctxRef.current.mirror ? selfie : raw);
+      ctxRef.current.send({ type: "face-live", face: selfie ? compactFace(selfie) : null });
+    }, LIVE_FACE_MS);
+    return () => {
+      clearInterval(timer);
+      faceStore.set("local", null);
+      ctxRef.current.send({ type: "face-live", face: null });
+    };
+  }, [effectOn, hasLocalStream, faceStore]);
 
   const background = settings.background;
   const useBackground = !!getBackground(background);
@@ -444,7 +542,8 @@ export function Booth({
   const allArrived =
     !!session &&
     complete(photos, session.order, session.shots) &&
-    (!useBackground || complete(masks, session.order, session.shots));
+    (!useBackground || complete(masks, session.order, session.shots)) &&
+    (!effectOn || completeFaces(faces, session.order, session.shots));
 
   useEffect(() => {
     if (phase !== "review" || allArrived) return;
@@ -460,6 +559,7 @@ export function Booth({
     const people = session.order.length;
     const columns = session.order.map((id) => photos.get(id) ?? []);
     const maskColumns = session.order.map((id) => masks.get(id) ?? []);
+    const faceColumns = session.order.map((id) => faces.get(id) ?? []);
     const jobs =
       format === "strip"
         ? [
@@ -468,6 +568,8 @@ export function Booth({
               shots: session.shots,
               photos: columns,
               masks: maskColumns,
+              faces: faceColumns,
+              effect: effectId,
               background,
               frame,
               filter,
@@ -484,6 +586,8 @@ export function Booth({
               shots: 1,
               photos: columns.map((list) => [list[s]]),
               masks: maskColumns.map((list) => [list[s]]),
+              faces: faceColumns.map((list) => [list[s]]),
+              effect: effectId,
               background,
               frame,
               filter,
@@ -506,7 +610,7 @@ export function Booth({
     return () => {
       cancelled = true;
     };
-  }, [phase, session, allArrived, timedOut, photos, masks, background, frame, filter, caption, format, roomId]);
+  }, [phase, session, allArrived, timedOut, photos, masks, faces, effectId, background, frame, filter, caption, format, roomId]);
 
   // Tidak ada yang tersimpan di server: ingatkan bila masih ada hasil yang belum diunduh.
   const unsaved = phase === "review" && results.some((r) => !savedNames.has(r.name));
@@ -628,6 +732,7 @@ export function Booth({
       filterCss={filterCss}
       videoRef={localVideoRef}
       mirror={room.mirror}
+      faceEffect={effectOn ? { id: effectId, store: faceStore, storeKey: "local" } : undefined}
       emptyText="Menyalakan kamera…"
       aspect={layout.aspect}
       style={{ width: tileWidth }}
@@ -648,6 +753,7 @@ export function Booth({
         filterCss={filterCss}
         emptyText={id ? (peer ? "Menyambungkan…" : "Terputus") : `Menunggu orang ke-${position}…`}
         quality={peer ? (peer.connected ? (peer.quality ?? "good") : "connecting") : undefined}
+        faceEffect={effectOn && id ? { id: effectId, store: faceStore, storeKey: id } : undefined}
         aspect={layout.aspect}
         style={{ width: tileWidth }}
       />
@@ -711,8 +817,8 @@ export function Booth({
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 py-5 md:px-8 md:py-7">
       <header className="flex flex-wrap items-center justify-between gap-3">
-        <Link href="/" className="font-display text-2xl font-bold">
-          Fotbar Bareng MaR
+        <Link href="/" className="text-2xl" aria-label="Fotbar Bareng MaR, ke halaman awal">
+          <Brand />
         </Link>
         <div className="flex items-center gap-2">
           <span className="rounded-full bg-curtain-deep px-4 py-2 font-mono text-sm tracking-wide">{roomId}</span>
@@ -851,6 +957,25 @@ export function Booth({
             </div>
           </Field>
 
+          <div className="md:col-span-2">
+            <Field label="Efek wajah">
+              <div className="flex flex-wrap gap-2">
+                <Chip pressed={settings.effect === NO_EFFECT} disabled={shooting} onClick={() => updateSettings({ effect: NO_EFFECT })}>
+                  Tanpa efek
+                </Chip>
+                {EFFECT_LIST.map((e) => (
+                  <Chip key={e.id} pressed={settings.effect === e.id} disabled={shooting} onClick={() => updateSettings({ effect: e.id })}>
+                    {e.label}
+                  </Chip>
+                ))}
+              </div>
+              <span className="text-xs text-paper/70">
+                Wajah dideteksi di perangkat masing-masing, lalu efeknya tampil langsung di kamera dan ikut di hasil foto.
+                Pertama kali perlu memuat ±4 MB ke browser (dan ±12 MB bila belum memakai background); tidak disimpan sebagai berkas.
+              </span>
+            </Field>
+          </div>
+
           <Field label="Jumlah foto">
             <div className="flex flex-wrap gap-2">
               {SHOT_OPTIONS.map((n) => (
@@ -913,7 +1038,7 @@ export function Booth({
               </div>
               <span className="text-xs text-paper/70">
                 Latar ruangan tiap orang diganti dengan pemandangan yang sama dan menyambung antar foto. Diproses di
-                perangkat masing-masing; pertama kali butuh mengunduh ±12 MB.
+                perangkat masing-masing; pertama kali perlu memuat ±12 MB ke browser; tidak disimpan sebagai berkas.
               </span>
             </Field>
           </div>
@@ -949,9 +1074,10 @@ export function Booth({
         </section>
       ) : (
         <section className="flex flex-col gap-5 rounded-3xl bg-curtain-deep/70 p-5 md:p-7" aria-label="Pengaturan dari pembuat room">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-7">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-4">
             <Summary label="Bingkai" value={theme.label} swatch={theme.bg} />
             <Summary label="Filter" value={FILTERS[settings.filter].label} />
+            <Summary label="Efek wajah" value={EFFECTS[settings.effect]?.label ?? "Tanpa efek"} />
             <Summary label="Jumlah foto" value={`${settings.shots} foto`} />
             <Summary label="Format" value={FORMATS[settings.format]} />
             <Summary label="Hitung mundur" value={`${settings.countdown} detik`} />

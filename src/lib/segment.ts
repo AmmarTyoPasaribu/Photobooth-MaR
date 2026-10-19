@@ -9,9 +9,8 @@
  * background dipakai. Versi WASM harus sama dengan versi paket @mediapipe/tasks-vision.
  */
 import type { ImageSegmenter } from "@mediapipe/tasks-vision";
+import { getVisionFileset } from "./vision";
 
-const TASKS_VISION_VERSION = "1.0.1";
-const WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${TASKS_VISION_VERSION}/wasm`;
 const MODEL_URL = "/models/selfie_segmenter.tflite";
 /** Lebar masker yang dikirim. Cukup halus untuk tepi rambut, tapi kecil untuk data channel. */
 const MASK_WIDTH = 640;
@@ -19,8 +18,8 @@ const MASK_WIDTH = 640;
 let segmenterPromise: Promise<ImageSegmenter> | null = null;
 
 async function createSegmenter(): Promise<ImageSegmenter> {
-  const { FilesetResolver, ImageSegmenter } = await import("@mediapipe/tasks-vision");
-  const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
+  const { ImageSegmenter } = await import("@mediapipe/tasks-vision");
+  const fileset = await getVisionFileset();
   const options = (delegate: "GPU" | "CPU") => ({
     baseOptions: { modelAssetPath: MODEL_URL, delegate },
     runningMode: "IMAGE" as const,

@@ -101,7 +101,14 @@ const BITRATE_BUDGET = 1_500_000;
 const BITRATE_MIN = 150_000;
 const BITRATE_MAX = 1_200_000;
 
+/** Batas tunggu kamera. getUserMedia bisa menggantung bila kamera dikunci aplikasi lain. */
+const CAMERA_TIMEOUT_MS = 20_000;
+const CAMERA_TIMEOUT = "CAMERA_TIMEOUT";
+
 function describeMediaError(err: unknown): string {
+  if (err instanceof Error && err.message === CAMERA_TIMEOUT) {
+    return "Kamera tidak merespons. Tutup aplikasi atau tab lain yang memakai kamera (Zoom, Meet, OBS, aplikasi Kamera), lalu muat ulang halaman.";
+  }
   if (err instanceof DOMException) {
     if (err.name === "NotAllowedError") return "Izin kamera/mikrofon ditolak. Izinkan lewat pengaturan browser lalu muat ulang.";
     if (err.name === "NotFoundError") return "Kamera atau mikrofon tidak ditemukan.";
@@ -136,7 +143,15 @@ function openCamera(isCancelled: () => boolean): Promise<MediaStream | null> {
     for (let attempt = 0; ; attempt++) {
       if (isCancelled()) return null;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+        let stream: MediaStream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(CAMERA_CONSTRAINTS);
+        } catch (err) {
+          // Kamera yang tidak punya resolusi/rasio yang diminta: coba lagi tanpa syarat.
+          if (err instanceof DOMException && err.name === "OverconstrainedError") {
+            stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          } else throw err;
+        }
         if (isCancelled()) {
           stream.getTracks().forEach((t) => t.stop());
           return null;
@@ -658,7 +673,15 @@ export function usePeerRoom(
       try {
         setMyId(id);
         setStage("media");
-        const stream = await openCamera(() => cancelled);
+        let gaveUp = false;
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => {
+            gaveUp = true;
+            reject(new Error(CAMERA_TIMEOUT));
+          }, CAMERA_TIMEOUT_MS),
+        );
+        // Bila kamera akhirnya terbuka setelah menyerah, langsung dimatikan lagi (isCancelled).
+        const stream = await Promise.race([openCamera(() => cancelled || gaveUp), timeout]);
         if (!stream || cancelled) {
           stream?.getTracks().forEach((t) => t.stop());
           return;

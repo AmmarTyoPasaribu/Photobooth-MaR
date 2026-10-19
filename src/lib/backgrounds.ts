@@ -17,6 +17,15 @@ export const BACKGROUND_LIST: BackgroundDef[] = [
   { id: "kafe", label: "Kafe", src: "/backgrounds/kafe.svg" },
   { id: "pantai", label: "Pantai", src: "/backgrounds/pantai.svg" },
   { id: "senja-kota", label: "Senja kota", src: "/backgrounds/senja-kota.svg" },
+  { id: "hutan", label: "Hutan", src: "/backgrounds/hutan.svg" },
+  { id: "gunung", label: "Gunung", src: "/backgrounds/gunung.svg" },
+  { id: "sakura", label: "Sakura", src: "/backgrounds/sakura.svg" },
+  { id: "pelangi", label: "Pelangi", src: "/backgrounds/pelangi.svg" },
+  { id: "bawah-laut", label: "Bawah laut", src: "/backgrounds/bawah-laut.svg" },
+  { id: "angkasa", label: "Luar angkasa", src: "/backgrounds/angkasa.svg" },
+  { id: "synthwave", label: "Synthwave", src: "/backgrounds/synthwave.svg" },
+  { id: "panggung", label: "Panggung", src: "/backgrounds/panggung.svg" },
+  { id: "pesta", label: "Pesta", src: "/backgrounds/pesta.svg" },
 ];
 
 export const BACKGROUNDS: Record<string, BackgroundDef> = Object.fromEntries(BACKGROUND_LIST.map((b) => [b.id, b]));

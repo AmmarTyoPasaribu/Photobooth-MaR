@@ -1,5 +1,7 @@
 import { getFrame, type FrameDef, type FrameSticker } from "./frames";
 import { getBackground } from "./backgrounds";
+import { drawFaceEffect, isEffect } from "./face-effects";
+import { mapFace, type Face } from "./face-math";
 import { getLayout } from "./layout";
 import type { FilterId, FrameId } from "./types";
 
@@ -8,7 +10,38 @@ export const FILTERS: Record<FilterId, { label: string; css: string }> = {
   bw: { label: "Hitam putih", css: "grayscale(1) contrast(1.1)" },
   vintage: { label: "Vintage", css: "sepia(0.55) contrast(1.05) saturate(1.1)" },
   warm: { label: "Hangat", css: "saturate(1.2) brightness(1.04)" },
+  cool: { label: "Sejuk", css: "saturate(1.1) hue-rotate(-10deg) brightness(1.02)" },
+  vivid: { label: "Cerah", css: "saturate(1.6) contrast(1.1)" },
+  fade: { label: "Pudar", css: "contrast(0.85) brightness(1.1) saturate(0.85)" },
+  noir: { label: "Noir", css: "grayscale(1) contrast(1.5) brightness(0.95)" },
+  sepia: { label: "Sepia", css: "sepia(1)" },
+  sunset: { label: "Senja", css: "sepia(0.35) saturate(1.5) hue-rotate(-18deg) brightness(1.05)" },
+  dream: { label: "Lembut", css: "brightness(1.08) contrast(0.9) saturate(1.2)" },
+  pastel: { label: "Pastel", css: "saturate(0.7) brightness(1.12) contrast(0.9)" },
+  neon: { label: "Neon", css: "grayscale(1) contrast(1.3) sepia(1) hue-rotate(250deg) saturate(3)" },
 };
+
+/** Duotone neon: bayangan ungu tua → magenta → cyan terang, menurut kecerahan piksel. */
+const NEON_STOPS: [number, number, number][] = [
+  [27, 10, 77],
+  [255, 63, 164],
+  [111, 255, 240],
+];
+
+function neon(l: number): [number, number, number] {
+  const t = Math.min(1, Math.max(0, l / 255)) * 2;
+  const i = Math.min(1, Math.floor(t));
+  const f = t - i;
+  const a = NEON_STOPS[i];
+  const b = NEON_STOPS[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+/** Menaikkan atau menurunkan saturasi: 1 = tetap, 0 = abu-abu. */
+function saturate(r: number, g: number, b: number, amount: number): [number, number, number] {
+  const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return [l + (r - l) * amount, l + (g - l) * amount, l + (b - l) * amount];
+}
 
 // Ukuran dasar (skala 1). Lebar sel = 600 px; tinggi mengikuti rasio dari getLayout (4:3 atau 1:1).
 const CELL_W = 600;
@@ -149,6 +182,48 @@ function applyFilter(ctx: CanvasRenderingContext2D, x: number, y: number, w: num
       d[i] = r * 1.08 + 6;
       d[i + 1] = g * 1.02 + 2;
       d[i + 2] = b * 0.9;
+    } else if (filter === "cool") {
+      d[i] = r * 0.92;
+      d[i + 1] = g;
+      d[i + 2] = b * 1.1 + 6;
+    } else if (filter === "vivid") {
+      const [sr, sg, sb] = saturate(r, g, b, 1.5);
+      d[i] = (sr - 128) * 1.08 + 128;
+      d[i + 1] = (sg - 128) * 1.08 + 128;
+      d[i + 2] = (sb - 128) * 1.08 + 128;
+    } else if (filter === "fade") {
+      const [sr, sg, sb] = saturate(r, g, b, 0.85);
+      d[i] = (sr - 128) * 0.85 + 142;
+      d[i + 1] = (sg - 128) * 0.85 + 142;
+      d[i + 2] = (sb - 128) * 0.85 + 142;
+    } else if (filter === "noir") {
+      const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      d[i] = d[i + 1] = d[i + 2] = (l - 128) * 1.5 + 122;
+    } else if (filter === "sepia") {
+      d[i] = 0.393 * r + 0.769 * g + 0.189 * b;
+      d[i + 1] = 0.349 * r + 0.686 * g + 0.168 * b;
+      d[i + 2] = 0.272 * r + 0.534 * g + 0.131 * b;
+    } else if (filter === "sunset") {
+      const [sr, sg, sb] = saturate(r, g, b, 1.25);
+      d[i] = sr * 1.15 + 12;
+      d[i + 1] = sg * 0.97;
+      d[i + 2] = sb * 0.88 + 10;
+    } else if (filter === "dream") {
+      const [sr, sg, sb] = saturate(r, g, b, 1.15);
+      d[i] = sr * 0.88 + 36;
+      d[i + 1] = sg * 0.88 + 30;
+      d[i + 2] = sb * 0.88 + 40;
+    } else if (filter === "pastel") {
+      const [sr, sg, sb] = saturate(r, g, b, 0.7);
+      d[i] = sr * 0.85 + 40;
+      d[i + 1] = sg * 0.85 + 40;
+      d[i + 2] = sb * 0.85 + 40;
+    } else if (filter === "neon") {
+      const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      const [nr, ng, nb] = neon((l - 128) * 1.2 + 128);
+      d[i] = nr;
+      d[i + 1] = ng;
+      d[i + 2] = nb;
     }
   }
   ctx.putImageData(image, x, y);
@@ -496,6 +571,10 @@ export type StripInput = {
   background?: string;
   /** masks[orang][jepretan]: masker orang (PNG alpha) untuk background pengganti. */
   masks?: (Blob | null | undefined)[][];
+  /** Efek wajah (`src/lib/face-effects.ts`), atau "none". */
+  effect?: string;
+  /** faces[orang][jepretan]: wajah pada foto (koordinat foto, arah sama dengan foto); "none" = tidak terdeteksi. */
+  faces?: (Face | "none" | null | undefined)[][];
 };
 
 /**
@@ -577,6 +656,16 @@ export async function renderStrip(input: StripInput): Promise<HTMLCanvasElement>
           else drawCover(ctx, img, x, y, w, h);
           // Filter diterapkan ke orang + latar sekaligus, jadi warnanya menyatu.
           applyFilter(ctx, x, y, w, h, input.filter);
+          // Efek wajah digambar setelah filter supaya warnanya tetap asli, dan dipotong di batas sel.
+          const face = input.faces?.[person]?.[shot];
+          if (isEffect(input.effect) && face && face !== "none") {
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(x, y, w, h);
+            ctx.clip();
+            drawFaceEffect(ctx, input.effect, mapFace(face, img.naturalWidth, img.naturalHeight, row[person]));
+            ctx.restore();
+          }
           continue;
         } catch {
           /* gambar kotak kosong di bawah */

@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
+import { drawFaceEffect } from "@/lib/face-effects";
+import { mapFace } from "@/lib/face-math";
+import type { FaceStore } from "@/lib/face-store";
 
 type Props = {
   stream: MediaStream | null;
@@ -16,7 +19,54 @@ type Props = {
   mirror?: boolean;
   /** Status koneksi teman; tidak diisi untuk tile milik sendiri. */
   quality?: "good" | "weak" | "connecting";
+  /** Efek wajah di kamera langsung: id efek, penyimpan wajah, dan kuncinya di penyimpan itu. */
+  faceEffect?: { id: string; store: FaceStore; storeKey: string };
 };
+
+/** Canvas di atas video yang menggambar efek wajah langsung, tanpa render ulang React. */
+function FaceOverlay({
+  effect,
+  videoRef,
+}: {
+  effect: { id: string; store: FaceStore; storeKey: string };
+  videoRef: RefObject<HTMLVideoElement | null>;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const { id, store, storeKey } = effect;
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const draw = () => {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      const dpr = window.devicePixelRatio || 1;
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const video = videoRef.current;
+      const face = store.get(storeKey);
+      if (!face || !video || !video.videoWidth || !video.videoHeight) return;
+      ctx.scale(dpr, dpr);
+      drawFaceEffect(ctx, id, mapFace(face, video.videoWidth, video.videoHeight, { x: 0, y: 0, w, h }));
+    };
+    draw();
+    const unsubscribe = store.subscribe(storeKey, draw);
+    const observer = new ResizeObserver(draw);
+    observer.observe(canvas);
+    return () => {
+      unsubscribe();
+      observer.disconnect();
+    };
+  }, [id, store, storeKey, videoRef]);
+
+  return <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true" />;
+}
 
 const QUALITY_BADGE = {
   good: { dot: "bg-green-400", text: "Lancar" },
@@ -35,6 +85,7 @@ export function VideoTile({
   aspect = 4 / 3,
   mirror = true,
   quality,
+  faceEffect,
 }: Props) {
   const innerRef = useRef<HTMLVideoElement | null>(null);
   const ref = videoRef ?? innerRef;
@@ -66,6 +117,8 @@ export function VideoTile({
         className={`h-full w-full object-cover ${mirror ? "-scale-x-100" : ""}`}
         style={{ filter: filterCss }}
       />
+
+      {faceEffect && <FaceOverlay effect={faceEffect} videoRef={ref} />}
 
       {!stream && (
         <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-ink/70">

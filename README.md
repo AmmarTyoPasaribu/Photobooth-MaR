@@ -76,6 +76,19 @@ Cara kerjanya:
 - **Kualitas koneksi:** tiap tile teman menampilkan "Lancar" atau "Lemah" (RTT > 400 ms atau paket hilang > 8%, diukur tiap 3 detik).
 - **Peringatan menutup tab:** bila ada hasil yang belum diunduh, browser menanyakan dulu karena tidak ada yang tersimpan di server.
 
+## Filter, background, dan efek wajah
+
+- **13 filter warna:** Asli, Hitam putih, Vintage, Hangat, Sejuk, Cerah, Pudar, Noir, Sepia, Senja, Lembut, Pastel, Neon. Tampilan kamera memakai CSS, sedangkan hasil foto dihitung per piksel di `src/lib/strip.ts` supaya sama di semua browser. Menambah filter: tambahkan id di `FilterId` (`src/lib/types.ts`), entri di `FILTERS`, dan rumus piksel di `applyFilter` (`src/lib/strip.ts`).
+- **14 background pengganti:** Studio, Ruang tamu, Kafe, Pantai, Senja kota, Hutan, Gunung, Sakura, Pelangi, Bawah laut, Luar angkasa, Synthwave, Panggung, Pesta (`public/backgrounds/`, didaftarkan di `src/lib/backgrounds.ts`).
+- **10 efek wajah:** telinga anjing (hidung dan lidah saat mulut terbuka), telinga kucing (dengan kumis), telinga kelinci, telinga beruang, topi pesta, mahkota, topi sulap, kacamata hitam, kacamata hati, mahkota bunga. Dipilih host, tampil langsung di kamera semua orang, dan ikut di hasil foto. Bisa diganti di tahap review tanpa memotret ulang.
+
+Cara kerja efek wajah (`src/lib/face.ts`, `face-math.ts`, `face-effects.ts`):
+
+1. Tiap perangkat mendeteksi wajahnya sendiri dengan MediaPipe Face Landmarker (model ±3,7 MB di `public/models/face_landmarker.task`, runtime WASM dibagi dengan segmentasi). Hanya diunduh saat efek dipilih.
+2. Hanya beberapa titik wajah (dahi, dagu, pipi, hidung, mulut, mata, ±150 byte) yang dikirim ke teman lewat data channel: terus-menerus untuk tampilan langsung (`face-live`, ±9 kali per detik), dan sekali per jepretan untuk hasil foto (`face`).
+3. Efek digambar dari bentuk vektor di canvas (bukan gambar), mengikuti posisi, ukuran, dan kemiringan kepala. Karena semua perangkat memakai titik wajah yang sama persis (sudah dibulatkan di sisi pengirim) dan kode gambar yang sama, hasil foto tetap identik.
+4. Detektor sulit mengenali wajah yang sangat kecil di dalam frame (di bawah ±8% lebar frame). Dalam kasus itu fotonya tetap jadi, hanya tanpa efek.
+
 ## Layout hasil
 
 Satu jepretan = satu panel. Susunan panel berasal dari satu fungsi bersama `getLayout(n)` (`src/lib/layout.ts`) yang dipakai untuk tampilan kamera live **dan** canvas, jadi yang terlihat saat foto sama dengan hasilnya:
@@ -112,7 +125,7 @@ Cara kerjanya:
 
 Catatan:
 
-- Model (±250 KB) ada di `public/models/selfie_segmenter.tflite`. Runtime WASM (±12 MB) dimuat dari jsDelivr **hanya** saat background dipilih, dan mulai diunduh begitu host memilihnya supaya siap saat memotret. Versi di `TASKS_VISION_VERSION` (`src/lib/segment.ts`) harus sama dengan versi paket `@mediapipe/tasks-vision` di `package.json`.
+- Model (±250 KB) ada di `public/models/selfie_segmenter.tflite`. Runtime WASM (±12 MB, dibagi dengan efek wajah) dimuat dari jsDelivr **hanya** saat background atau efek wajah dipilih, dan mulai diunduh begitu host memilihnya supaya siap saat memotret. Versi di `TASKS_VISION_VERSION` (`src/lib/segment.ts`) harus sama dengan versi paket `@mediapipe/tasks-vision` di `package.json` (konstanta ada di `src/lib/vision.ts`).
 - Background bisa diganti di tahap review tanpa memotret ulang. Bila masker belum ada, perangkat masing-masing membuatnya saat itu juga.
 - Kalau masker seseorang tidak datang dalam 12 detik (mis. model gagal dimuat di HP lama), fotonya ditampilkan dengan latar asli, lalu diganti begitu maskernya datang.
 - Tampilan kamera live tetap menampilkan latar asli; penggantian background hanya pada hasil foto.

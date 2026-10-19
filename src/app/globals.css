@@ -6,34 +6,52 @@
 }
 
 @theme inline {
-  --color-curtain: #2238c9;
-  --color-curtain-deep: #16258a;
-  --color-paper: #fbfbf7;
-  --color-ink: #0e1440;
-  --color-flash: #ffe34d;
-  --color-alert: #ff8a7a;
+  /* Palet "plum & koral": latar ungu tua, aksen koral, teks krem hangat. */
+  --color-curtain: #2b1646;
+  --color-curtain-deep: #1b0d30;
+  --color-paper: #fff7f0;
+  --color-ink: #1a0f2e;
+  --color-flash: #ff7a59;
+  --color-alert: #ffb199;
 
   --font-display: var(--font-display);
   --font-sans: var(--font-body);
 }
 
 html {
-  background: var(--color-curtain);
+  background: var(--color-curtain-deep);
   color-scheme: light;
 }
 
+/*
+ * Latar ala bilik foto: tirai beludru berlipat (garis vertikal), butiran film halus,
+ * cahaya hangat dari atas, dan vignette di tepi.
+ */
 body {
-  background-color: var(--color-curtain);
-  /* lipatan tirai booth */
-  background-image: repeating-linear-gradient(
-    90deg,
-    rgb(0 0 0 / 0) 0px,
-    rgb(0 0 0 / 0.07) 38px,
-    rgb(255 255 255 / 0.04) 64px,
-    rgb(0 0 0 / 0) 88px
-  );
+  background-color: var(--color-curtain-deep);
+  background-image:
+    radial-gradient(ellipse at 50% 40%, rgb(0 0 0 / 0) 45%, rgb(0 0 0 / 0.3) 100%),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22220%22%20height%3D%22220%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.85%22%20numOctaves%3D%222%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20values%3D%220%200%200%200%201%20%200%200%200%200%201%20%200%200%200%200%201%20%200%200%200%200.55%200%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22100%25%22%20height%3D%22100%25%22%20filter%3D%22url(%23n)%22%2F%3E%3C%2Fsvg%3E"),
+    radial-gradient(55rem 32rem at 50% -8%, rgb(255 190 110 / 0.1), transparent 65%),
+    radial-gradient(40rem 34rem at 100% 30%, rgb(255 122 89 / 0.06), transparent 62%),
+    repeating-linear-gradient(
+      90deg,
+      rgb(0 0 0 / 0.14) 0px,
+      rgb(255 255 255 / 0.012) 26px,
+      rgb(255 255 255 / 0.035) 46px,
+      rgb(255 255 255 / 0.012) 66px,
+      rgb(0 0 0 / 0.14) 92px
+    ),
+    linear-gradient(180deg, var(--color-curtain) 0%, var(--color-curtain-deep) 100%);
+  background-blend-mode: normal, soft-light, normal, normal, normal, normal;
   color: var(--color-paper);
   font-family: var(--font-body);
+}
+
+@media (min-width: 768px) {
+  body {
+    background-attachment: fixed;
+  }
 }
 
 :focus-visible {
@@ -84,10 +102,79 @@ body {
   animation: strip-drop 900ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
+/* Strip contoh mengambang pelan. */
+@keyframes float-bob {
+  0% {
+    transform: translateY(0) rotate(2deg);
+  }
+  50% {
+    transform: translateY(-16px) rotate(4deg);
+  }
+  100% {
+    transform: translateY(0) rotate(0.5deg);
+  }
+}
+
+.animate-float {
+  animation: float-bob 7s ease-in-out infinite;
+}
+
+/* Bayangan di bawah strip mengecil saat strip naik. */
+@keyframes shadow-breathe {
+  0%,
+  100% {
+    transform: scaleX(1);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleX(0.8);
+    opacity: 0.28;
+  }
+}
+
+.animate-shadow {
+  animation: shadow-breathe 7s ease-in-out infinite;
+}
+
+/* Konfeti dan bentuk kecil yang melayang di sekitar strip. */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate(0, 0) rotate(0deg) scale(1);
+  }
+  50% {
+    transform: translate(8px, -20px) rotate(24deg) scale(1.12);
+  }
+}
+
+.animate-drift {
+  animation: drift var(--dur, 6s) ease-in-out var(--delay, 0s) infinite;
+}
+
+/* Kilau yang menyapu permukaan strip. */
+@keyframes sheen {
+  0%,
+  55% {
+    transform: translateX(-130%) skewX(-18deg);
+  }
+  100% {
+    transform: translateX(260%) skewX(-18deg);
+  }
+}
+
+.animate-sheen {
+  animation: sheen 6.5s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-flash,
   .animate-count,
-  .animate-strip {
+  .animate-strip,
+  .animate-float,
+  .animate-shadow,
+  .animate-drift,
+  .animate-sheen {
     animation-duration: 1ms;
+    animation-iteration-count: 1;
   }
 }

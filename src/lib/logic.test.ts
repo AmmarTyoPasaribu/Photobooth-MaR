@@ -36,3 +36,10 @@ test("parseCapacity hanya menerima 1–8", () => {
   assert.equal(parseCapacity(8), 8);
   for (const bad of ["0", "9", 2.5, undefined, null, "abc", ""]) assert.equal(parseCapacity(bad), null, String(bad));
 });
+
+test("filter dan background punya pasangan label", async () => {
+  const { BACKGROUND_LIST } = await import("./backgrounds.ts");
+  const ids = BACKGROUND_LIST.map((b) => b.id);
+  assert.equal(new Set(ids).size, ids.length, "id background unik");
+  assert.ok(ids.length >= 14);
+});
