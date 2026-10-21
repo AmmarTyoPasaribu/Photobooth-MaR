@@ -21,6 +21,8 @@
 html {
   background: var(--color-curtain-deep);
   color-scheme: light;
+  /* konfeti yang melayang di tepi tidak boleh melebarkan halaman di HP */
+  overflow-x: clip;
 }
 
 /*
@@ -46,6 +48,7 @@ body {
   background-blend-mode: normal, soft-light, normal, normal, normal, normal;
   color: var(--color-paper);
   font-family: var(--font-body);
+  overflow-x: clip;
 }
 
 @media (min-width: 768px) {

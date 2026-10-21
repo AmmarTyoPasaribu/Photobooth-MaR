@@ -6,7 +6,7 @@
  * di `public/frames/` lalu dirujuk lewat `stickers` (lihat README, bagian "Bingkai sendiri").
  */
 
-export type FramePattern = "dots" | "stripes" | "gingham" | "grid";
+export type FramePattern = "dots" | "stripes" | "gingham" | "grid" | "islamic";
 export type FrameDecor = "hearts" | "stars" | "sparkles";
 export type StickerAnchor =
   | "top-left"
@@ -69,6 +69,56 @@ export const FRAME_LIST: FrameDef[] = [
       { src: "/frames/star.svg", anchor: "top-right", size: 130 },
       { src: "/frames/heart.svg", anchor: "footer-right", size: 120 },
     ],
+  },
+  {
+    id: "masjid",
+    label: "Masjid",
+    bg: "#0E5A45",
+    fg: "#F3DFA0",
+    pattern: "islamic",
+    padding: 88,
+    stickers: [
+      { src: "/frames/lentera.svg", anchor: "top-left", size: 150 },
+      { src: "/frames/bulan-bintang.svg", anchor: "top-right", size: 130 },
+      { src: "/frames/masjid.svg", anchor: "footer-right", size: 170 },
+    ],
+  },
+  {
+    id: "ramadan",
+    label: "Ramadan",
+    bg: "#17224D",
+    fg: "#FFD36B",
+    pattern: "islamic",
+    decor: "stars",
+    padding: 88,
+    stickers: [
+      { src: "/frames/lentera.svg", anchor: "top-left", size: 140 },
+      { src: "/frames/bulan-bintang.svg", anchor: "top-right", size: 140 },
+      { src: "/frames/lentera.svg", anchor: "footer-right", size: 120 },
+    ],
+  },
+  {
+    id: "lebaran",
+    label: "Lebaran",
+    bg: "#F7EBD0",
+    fg: "#1B6B53",
+    pattern: "islamic",
+    padding: 88,
+    stickers: [
+      { src: "/frames/ketupat.svg", anchor: "top-left", size: 150 },
+      { src: "/frames/ketupat.svg", anchor: "top-right", size: 150 },
+      { src: "/frames/bulan-bintang.svg", anchor: "footer-right", size: 110 },
+    ],
+  },
+  {
+    id: "emas",
+    label: "Putih emas",
+    bg: "#FFFBF1",
+    fg: "#A97C1F",
+    pattern: "islamic",
+    decor: "sparkles",
+    padding: 72,
+    stickers: [{ src: "/frames/bulan-bintang.svg", anchor: "footer-right", size: 100 }],
   },
 ];
 

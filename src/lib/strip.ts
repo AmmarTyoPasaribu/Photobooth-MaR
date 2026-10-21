@@ -286,6 +286,36 @@ function drawPattern(
     ctx.globalAlpha = 0.14;
     for (let y = 0; y < h; y += step) ctx.fillRect(0, y, w, band);
     for (let x = 0; x < w; x += step) ctx.fillRect(x, 0, band, h);
+  } else if (frame.pattern === "islamic") {
+    // Bintang segi delapan (dua persegi yang diputar 45°) dengan lingkaran di tengahnya, tersusun seperti ubin geometris.
+    const step = 72 * unit;
+    const half = 24 * unit;
+    ctx.globalAlpha = 0.2;
+    ctx.lineWidth = Math.max(1.5, 2.4 * unit);
+    ctx.lineJoin = "miter";
+    for (let y = step / 2; y < h + step; y += step) {
+      for (let x = step / 2; x < w + step; x += step) {
+        for (const turn of [0, Math.PI / 4]) {
+          ctx.beginPath();
+          for (let k = 0; k < 4; k++) {
+            const a = turn + Math.PI / 4 + (k * Math.PI) / 2;
+            const px = x + Math.cos(a) * half * Math.SQRT2;
+            const py = y + Math.sin(a) * half * Math.SQRT2;
+            if (k === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(x, y, half * 0.42, 0, Math.PI * 2);
+        ctx.stroke();
+        // titik penghubung di antara bintang
+        ctx.beginPath();
+        ctx.arc(x + step / 2, y + step / 2, 3 * unit, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   } else if (frame.pattern === "grid") {
     const step = 40 * unit;
     ctx.globalAlpha = 0.14;
@@ -571,8 +601,8 @@ export type StripInput = {
   background?: string;
   /** masks[orang][jepretan]: masker orang (PNG alpha) untuk background pengganti. */
   masks?: (Blob | null | undefined)[][];
-  /** Efek wajah (`src/lib/face-effects.ts`), atau "none". */
-  effect?: string;
+  /** effects[orang]: efek wajah pilihan tiap orang (`src/lib/face-effects.ts`), atau "none". */
+  effects?: string[];
   /** faces[orang][jepretan]: wajah pada foto (koordinat foto, arah sama dengan foto); "none" = tidak terdeteksi. */
   faces?: (Face | "none" | null | undefined)[][];
 };
@@ -658,12 +688,13 @@ export async function renderStrip(input: StripInput): Promise<HTMLCanvasElement>
           applyFilter(ctx, x, y, w, h, input.filter);
           // Efek wajah digambar setelah filter supaya warnanya tetap asli, dan dipotong di batas sel.
           const face = input.faces?.[person]?.[shot];
-          if (isEffect(input.effect) && face && face !== "none") {
+          const effect = input.effects?.[person];
+          if (isEffect(effect) && face && face !== "none") {
             ctx.save();
             ctx.beginPath();
             ctx.rect(x, y, w, h);
             ctx.clip();
-            drawFaceEffect(ctx, input.effect, mapFace(face, img.naturalWidth, img.naturalHeight, row[person]));
+            drawFaceEffect(ctx, effect, mapFace(face, img.naturalWidth, img.naturalHeight, row[person]));
             ctx.restore();
           }
           continue;

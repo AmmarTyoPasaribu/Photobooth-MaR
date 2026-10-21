@@ -1,12 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useBoxSize } from "@/hooks/useBoxSize";
 import { usePeerRoom } from "@/hooks/usePeerRoom";
 import { BACKGROUND_LIST, BACKGROUNDS, getBackground, NO_BACKGROUND } from "@/lib/backgrounds";
 import { captureFrame } from "@/lib/capture";
-import { detectFace, preloadFaceLandmarker } from "@/lib/face";
+import { detectFace, detectFaceInPhoto, preloadFaceLandmarker } from "@/lib/face";
 import { EFFECT_LIST, EFFECTS, isEffect, NO_EFFECT } from "@/lib/face-effects";
 import { compactFace, cropToPhoto, flipFace, sanitizeFace, type Face } from "@/lib/face-math";
 import { FaceStore } from "@/lib/face-store";
@@ -27,6 +27,7 @@ import {
   type FilterId,
 } from "@/lib/types";
 import { Brand } from "./Brand";
+import { CameraSwitchIcon, ChevronIcon, MicIcon, MicOffIcon, ShareIcon } from "./Icons";
 import { DecorTile } from "./DecorTile";
 import { FramePicker } from "./FramePicker";
 import { ResultGallery, type ResultImage } from "./ResultGallery";
@@ -62,7 +63,6 @@ function defaultsFor(people: number): BoothSettings {
     caption: "kita",
     format: defaultFormatFor(people),
     background: NO_BACKGROUND,
-    effect: NO_EFFECT,
   };
 }
 
@@ -117,7 +117,6 @@ function sanitizeSettings(value: unknown): BoothSettings | null {
     caption: String(s.caption ?? "").slice(0, CAPTION_MAX),
     format: s.format === "single" ? "single" : "strip",
     background: typeof s.background === "string" && hasOwn(BACKGROUNDS, s.background) ? s.background : NO_BACKGROUND,
-    effect: typeof s.effect === "string" && hasOwn(EFFECTS, s.effect) ? s.effect : NO_EFFECT,
   };
 }
 
@@ -172,6 +171,11 @@ export function Booth({
   /** Masker orang per peserta per jepretan, untuk background pengganti. */
   const [masks, setMasks] = useState<Photos>(() => new Map());
   const [faces, setFaces] = useState<Faces>(() => new Map());
+  /** Efek wajah pilihanku sendiri, dan pilihan tiap teman (dikirim lewat data channel). */
+  const [myEffect, setMyEffect] = useState(NO_EFFECT);
+  const [effects, setEffects] = useState<Record<string, string>>({});
+  /** Foto-ku yang sedang/sudah dicari wajahnya setelah memotret (kunci: indeks jepretan). */
+  const faceJobsRef = useRef(new Set<number>());
   /** Wajah terbaru tiap tile untuk efek di kamera langsung (tidak memicu render). */
   const [faceStore] = useState(() => new FaceStore());
   const [timedOut, setTimedOut] = useState(false);
@@ -202,6 +206,7 @@ export function Booth({
     sendTo: (peerId: string, message: BoothMessage) => void;
     sendPhoto: (index: number, blob: Blob, kind?: BlobKind) => void;
     send: (message: BoothMessage) => void;
+    effect: string;
   }>({
     myId: null,
     hostId: null,
@@ -212,6 +217,7 @@ export function Booth({
     sendTo: () => undefined,
     sendPhoto: () => undefined,
     send: () => undefined,
+    effect: NO_EFFECT,
   });
 
   const box = useBoxSize(stageBoxRef);
@@ -225,6 +231,7 @@ export function Booth({
     setMasks(new Map());
     setFaces(new Map());
     maskJobsRef.current = new Set();
+    faceJobsRef.current = new Set();
     setTimedOut(false);
     setResults(revokeAll);
   }, []);
@@ -261,7 +268,7 @@ export function Booth({
       if (video && myId) {
         try {
           // Wajah dideteksi pada frame yang sama dengan foto, sebelum frame berikutnya datang.
-          const wantFace = isEffect(ctxRef.current.settings.effect);
+          const wantFace = isEffect(ctxRef.current.effect);
           // Dibulatkan seperti yang dikirim ke teman, supaya posisi efek identik di semua perangkat.
           const detected = wantFace ? photoFaceFrom(video, ctxRef.current.mirror) : null;
           const face = detected ? compactFace(detected) : null;
@@ -291,6 +298,7 @@ export function Booth({
       setMasks(new Map());
       setFaces(new Map());
       maskJobsRef.current = new Set();
+      faceJobsRef.current = new Set();
       setTimedOut(false);
       setResults(revokeAll);
       setPhase("shooting");
@@ -333,6 +341,7 @@ export function Booth({
         return next;
       });
       maskJobsRef.current.delete(index);
+      faceJobsRef.current.delete(index);
       setTimedOut(false);
       setResults(revokeAll);
       setPhase("shooting");
@@ -362,6 +371,14 @@ export function Booth({
         if (rtt < 0 || rtt > 5000) return;
         const best = clockRef.current.get(from);
         if (!best || rtt < best.rtt) clockRef.current.set(from, { offset: message.r - (message.t + rtt / 2), rtt });
+        return;
+      }
+      if (message.type === "effect") {
+        const id =
+          typeof message.effect === "string" && (message.effect === NO_EFFECT || hasOwn(EFFECTS, message.effect))
+            ? message.effect
+            : NO_EFFECT;
+        setEffects((prev) => (prev[from] === id ? prev : { ...prev, [from]: id }));
         return;
       }
       if (message.type === "face-live") {
@@ -429,6 +446,8 @@ export function Booth({
 
   // Host mengirim pengaturan terkini ke setiap data channel yang baru terbuka.
   const onChannelOpen = useCallback((peerId: string) => {
+    // Beri tahu teman ini efek wajah pilihanku.
+    ctxRef.current.sendTo(peerId, { type: "effect", effect: ctxRef.current.effect });
     // Ukur selisih jam dengan teman ini (dipakai untuk hitung mundur serempak).
     for (let k = 0; k < CLOCK_PINGS; k++) {
       setTimeout(() => ctxRef.current.sendTo(peerId, { type: "ping", t: Date.now() }), k * 150);
@@ -465,6 +484,7 @@ export function Booth({
       sendTo: room.sendTo,
       sendPhoto: room.sendPhoto,
       send: room.send,
+      effect: myEffect,
     };
   });
 
@@ -482,8 +502,15 @@ export function Booth({
     stageRef.current?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
   }, [phase]);
 
-  const effectId = settings.effect;
-  const effectOn = isEffect(effectId);
+  const effectOn = isEffect(myEffect);
+  /** Efek yang dipilih `id` (aku atau teman). */
+  const effectFor = (id: string) => (id === room.myId ? myEffect : (effects[id] ?? NO_EFFECT));
+
+  const chooseEffect = (id: string) => {
+    if (phase === "shooting") return;
+    setMyEffect(id);
+    send({ type: "effect", effect: id });
+  };
 
   // Model wajah mulai diunduh begitu host memilih efek, supaya siap saat memotret.
   useEffect(() => {
@@ -508,6 +535,30 @@ export function Booth({
       ctxRef.current.send({ type: "face-live", face: null });
     };
   }, [effectOn, hasLocalStream, faceStore]);
+
+  // Efek dipilih setelah memotret (atau model belum siap saat memotret): cari wajah pada foto-fotoku yang sudah ada.
+  const myIdForFaces = room.myId;
+  const myPhotosForFaces = myIdForFaces ? photos.get(myIdForFaces) : undefined;
+  const myFacesForFaces = myIdForFaces ? faces.get(myIdForFaces) : undefined;
+  useEffect(() => {
+    if (!effectOn || !session || phase !== "review" || !myIdForFaces || !myPhotosForFaces) return;
+    myPhotosForFaces.forEach((photo, index) => {
+      if (!photo || myFacesForFaces?.[index] || faceJobsRef.current.has(index)) return;
+      faceJobsRef.current.add(index);
+      const jobs = faceJobsRef.current;
+      detectFaceInPhoto(photo)
+        .then((face) => {
+          if (faceJobsRef.current !== jobs) return; // sesi sudah berganti
+          const compact = face ? compactFace(face) : null;
+          setFaces((prev) => withFace(prev, myIdForFaces, index, compact ?? "none", session.shots));
+          ctxRef.current.send({ type: "face", index, face: compact });
+        })
+        .catch((err) => {
+          console.warn("[face] foto", err);
+          if (faceJobsRef.current === jobs) jobs.delete(index);
+        });
+    });
+  }, [effectOn, session, phase, myIdForFaces, myPhotosForFaces, myFacesForFaces]);
 
   const background = settings.background;
   const useBackground = !!getBackground(background);
@@ -543,7 +594,11 @@ export function Booth({
     !!session &&
     complete(photos, session.order, session.shots) &&
     (!useBackground || complete(masks, session.order, session.shots)) &&
-    (!effectOn || completeFaces(faces, session.order, session.shots));
+    completeFaces(
+      faces,
+      session.order.filter((id) => isEffect(effectFor(id))),
+      session.shots,
+    );
 
   useEffect(() => {
     if (phase !== "review" || allArrived) return;
@@ -560,6 +615,7 @@ export function Booth({
     const columns = session.order.map((id) => photos.get(id) ?? []);
     const maskColumns = session.order.map((id) => masks.get(id) ?? []);
     const faceColumns = session.order.map((id) => faces.get(id) ?? []);
+    const effectColumns = session.order.map((id) => (id === room.myId ? myEffect : (effects[id] ?? NO_EFFECT)));
     const jobs =
       format === "strip"
         ? [
@@ -569,7 +625,7 @@ export function Booth({
               photos: columns,
               masks: maskColumns,
               faces: faceColumns,
-              effect: effectId,
+              effects: effectColumns,
               background,
               frame,
               filter,
@@ -587,7 +643,7 @@ export function Booth({
               photos: columns.map((list) => [list[s]]),
               masks: maskColumns.map((list) => [list[s]]),
               faces: faceColumns.map((list) => [list[s]]),
-              effect: effectId,
+              effects: effectColumns,
               background,
               frame,
               filter,
@@ -610,7 +666,7 @@ export function Booth({
     return () => {
       cancelled = true;
     };
-  }, [phase, session, allArrived, timedOut, photos, masks, faces, effectId, background, frame, filter, caption, format, roomId]);
+  }, [phase, session, allArrived, timedOut, photos, masks, faces, effects, myEffect, room.myId, background, frame, filter, caption, format, roomId]);
 
   // Tidak ada yang tersimpan di server: ingatkan bila masih ada hasil yang belum diunduh.
   const unsaved = phase === "review" && results.some((r) => !savedNames.has(r.name));
@@ -702,24 +758,32 @@ export function Booth({
   const slotCount = inSession ? session.order.length : Math.max(people, room.members.length, 1);
   const layout = getLayout(slotCount);
   const portraitPhone = box.viewportWidth > 0 && box.viewportWidth < 640 && box.viewportHeight > box.viewportWidth;
-  const liveCols = portraitPhone && slotCount >= 5 ? 2 : layout.cols;
-  const liveRows = Math.ceil(layout.slots / liveCols);
-  // 2 orang: tile menempel tanpa celah, sama seperti hasilnya.
-  const tileGap = layout.seamless && liveCols === layout.cols ? 0 : TILE_GAP;
+  // Ruang untuk panggung: sisa layar di bawah header dan status, dikurangi bar tombol tepat di bawah kamera,
+  // supaya tombol "Mulai foto" selalu terlihat tanpa scroll.
+  const ACTION_BAR = 84;
   const availW = box.width - STAGE_PAD * 2;
-  const availH = box.viewportHeight - (shooting ? 24 : 190) - STAGE_PAD * 2;
-  const tileWidth =
-    box.width > 0
-      ? Math.max(
-          72,
-          Math.floor(
-            Math.min(
-              (availW - tileGap * (liveCols - 1)) / liveCols,
-              ((availH - tileGap * (liveRows - 1)) / liveRows) * layout.aspect,
-            ),
-          ),
-        )
-      : 240;
+  const availH = Math.max(
+    140,
+    shooting
+      ? box.viewportHeight - 24 - STAGE_PAD * 2
+      : box.viewportHeight - box.top - ACTION_BAR - 16 - STAGE_PAD * 2,
+  );
+  const fitWidth = (cols: number) => {
+    const rows = Math.ceil(layout.slots / cols);
+    // 2 orang: tile menempel tanpa celah, sama seperti hasilnya.
+    const gap = layout.seamless && cols === layout.cols ? 0 : TILE_GAP;
+    const width = Math.floor(
+      Math.min((availW - gap * (cols - 1)) / cols, ((availH - gap * (rows - 1)) / rows) * layout.aspect),
+    );
+    return { cols, gap, width };
+  };
+  // Di HP portrait, susunan kolom yang membuat tile terbesar yang dipilih (mis. 2 orang ditumpuk, bukan berdampingan).
+  // Di layar lebar, susunan selalu sama dengan hasil foto.
+  const options = (portraitPhone ? [layout.cols, 1, 2, 3] : [layout.cols]).map(fitWidth);
+  const best = options.reduce((a, b) => (b.width > a.width ? b : a));
+  const liveCols = best.cols;
+  const tileGap = best.gap;
+  const tileWidth = box.width > 0 ? Math.max(72, best.width) : 240;
   const shotsForLabel = inSession ? session.shots : settings.shots;
   const decorLabel = `${(shooting ? shotIndex : 0) + 1}/${shotsForLabel}`;
 
@@ -732,7 +796,7 @@ export function Booth({
       filterCss={filterCss}
       videoRef={localVideoRef}
       mirror={room.mirror}
-      faceEffect={effectOn ? { id: effectId, store: faceStore, storeKey: "local" } : undefined}
+      faceEffect={effectOn ? { id: myEffect, store: faceStore, storeKey: "local" } : undefined}
       emptyText="Menyalakan kamera…"
       aspect={layout.aspect}
       style={{ width: tileWidth }}
@@ -753,7 +817,7 @@ export function Booth({
         filterCss={filterCss}
         emptyText={id ? (peer ? "Menyambungkan…" : "Terputus") : `Menunggu orang ke-${position}…`}
         quality={peer ? (peer.connected ? (peer.quality ?? "good") : "connecting") : undefined}
-        faceEffect={effectOn && id ? { id: effectId, store: faceStore, storeKey: id } : undefined}
+        faceEffect={id && isEffect(effects[id]) ? { id: effects[id], store: faceStore, storeKey: id } : undefined}
         aspect={layout.aspect}
         style={{ width: tileWidth }}
       />
@@ -791,15 +855,21 @@ export function Booth({
   const stripShots = inSession ? session.shots : settings.shots;
   const thumbShots = settings.format === "single" ? 1 : stripShots;
 
+  const iconButton =
+    "flex h-12 min-w-12 shrink-0 items-center justify-center gap-2 rounded-full border-2 border-paper/50 px-0 text-sm font-bold transition-colors hover:bg-paper hover:text-ink disabled:opacity-40 sm:px-5";
+
   const cameraButton =
     room.cameraCount > 1 ? (
       <button
         type="button"
         onClick={room.switchCamera}
         disabled={!room.localStream || room.switching || shooting}
-        className="rounded-full border-2 border-paper/60 px-5 py-3 text-sm font-bold transition-colors hover:bg-paper hover:text-ink disabled:opacity-40"
+        aria-label="Ganti kamera"
+        title="Ganti kamera"
+        className={iconButton}
       >
-        {room.switching ? "Mengganti…" : "Ganti kamera"}
+        <CameraSwitchIcon />
+        <span className="hidden sm:inline">{room.switching ? "Mengganti…" : "Ganti kamera"}</span>
       </button>
     ) : null;
 
@@ -808,26 +878,62 @@ export function Booth({
       type="button"
       onClick={room.toggleMic}
       disabled={!room.localStream}
-      className="rounded-full border-2 border-paper/60 px-5 py-3 text-sm font-bold transition-colors hover:bg-paper hover:text-ink disabled:opacity-40"
+      aria-label={room.micOn ? "Matikan mikrofon" : "Nyalakan mikrofon"}
+      aria-pressed={!room.micOn}
+      title={room.micOn ? "Matikan mikrofon" : "Nyalakan mikrofon"}
+      className={`${iconButton} aria-pressed:border-alert aria-pressed:bg-alert/15 aria-pressed:text-alert`}
     >
-      {room.micOn ? "Matikan mikrofon" : "Nyalakan mikrofon"}
+      {room.micOn ? <MicIcon /> : <MicOffIcon />}
+      <span className="hidden sm:inline">{room.micOn ? "Matikan mikrofon" : "Nyalakan mikrofon"}</span>
     </button>
   );
 
+  // Bar tombol tepat di bawah kamera, supaya tidak perlu scroll jauh di HP.
+  const actionBar =
+    phase === "idle" ? (
+      <div className="mx-auto flex w-full max-w-xl flex-col gap-2" aria-label="Kontrol foto" role="group">
+        <div className="flex items-stretch gap-2">
+          {canControl ? (
+            <button
+              type="button"
+              onClick={start}
+              disabled={!canStart}
+              className="min-h-14 flex-1 rounded-full bg-flash px-6 text-lg font-bold text-ink shadow-[0_5px_0_0_var(--color-ink)] transition-transform active:translate-y-1 active:shadow-[0_1px_0_0_var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Mulai foto
+            </button>
+          ) : (
+            <p className="flex min-h-14 flex-1 items-center justify-center rounded-full bg-paper/10 px-4 text-center text-sm text-paper/85">
+              Menunggu pembuat room memulai foto
+            </p>
+          )}
+          {micButton}
+          {cameraButton}
+        </div>
+        {canControl && !canStart && !solo && (
+          <p className="text-center text-xs text-paper/70">Tombol aktif setelah minimal satu teman tersambung.</p>
+        )}
+      </div>
+    ) : null;
+
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 py-5 md:px-8 md:py-7">
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <Link href="/" className="text-2xl" aria-label="Fotbar Bareng MaR, ke halaman awal">
+    <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-3 px-3 py-3 sm:px-4 md:gap-5 md:px-8 md:py-7">
+      <header className="flex items-center justify-between gap-2">
+        <Link href="/" className="min-w-0 truncate text-lg sm:text-2xl" aria-label="Fotbar Bareng MaR, ke halaman awal">
           <Brand />
         </Link>
-        <div className="flex items-center gap-2">
-          <span className="rounded-full bg-curtain-deep px-4 py-2 font-mono text-sm tracking-wide">{roomId}</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full bg-curtain-deep px-3 py-1.5 font-mono text-xs tracking-wide sm:px-4 sm:py-2 sm:text-sm">
+            {roomId}
+          </span>
           <button
             type="button"
             onClick={shareLink}
-            className="rounded-full border-2 border-paper px-4 py-1.5 text-sm font-bold transition-colors hover:bg-paper hover:text-ink"
+            aria-label="Bagikan tautan"
+            className="flex h-9 items-center gap-2 rounded-full border-2 border-paper px-3 text-sm font-bold transition-colors hover:bg-paper hover:text-ink sm:px-4"
           >
-            Bagikan tautan
+            <ShareIcon className="h-4 w-4" />
+            <span className="hidden sm:inline">Bagikan tautan</span>
           </button>
         </div>
       </header>
@@ -844,7 +950,7 @@ export function Booth({
         </div>
       )}
 
-      <p role="status" className="text-base text-paper/90">
+      <p role="status" className="text-sm leading-snug text-paper/90 md:text-base">
         {shareNote ?? status}
       </p>
 
@@ -880,6 +986,8 @@ export function Booth({
           )}
         </section>
       </div>
+
+      {actionBar}
 
       {phase === "review" && (
         <section className="flex flex-col items-center gap-5" aria-label="Hasil foto">
@@ -918,31 +1026,115 @@ export function Booth({
               Foto lagi
             </button>
           )}
+          <div className="flex justify-center gap-2">
+            {micButton}
+            {cameraButton}
+          </div>
+        </section>
+      )}
+
+      {phase !== "shooting" && (
+        <section className="rounded-3xl bg-curtain-deep/70 p-4 md:p-7" aria-label="Efek wajahmu">
+          <Section title="Efek wajah kamu" value={EFFECTS[myEffect]?.label ?? "Tanpa efek"} last>
+            <div className="flex flex-wrap gap-2">
+              <Chip pressed={myEffect === NO_EFFECT} onClick={() => chooseEffect(NO_EFFECT)}>
+                Tanpa efek
+              </Chip>
+              {EFFECT_LIST.map((e) => (
+                <Chip key={e.id} pressed={myEffect === e.id} onClick={() => chooseEffect(e.id)}>
+                  {e.label}
+                </Chip>
+              ))}
+            </div>
+            <span className="text-xs text-paper/70">
+              Efek ini hanya untuk wajahmu; teman memilih efeknya sendiri. Wajah dideteksi di perangkatmu, tampil langsung
+              di kamera semua orang, dan ikut di hasil foto. Pertama kali perlu memuat ±4 MB ke browser (dan ±12 MB
+              bila belum memakai background); tidak disimpan sebagai berkas.
+            </span>
+          </Section>
         </section>
       )}
 
       {canControl ? (
-        <section className="grid gap-6 rounded-3xl bg-curtain-deep/70 p-5 md:grid-cols-2 md:p-7" aria-label="Pengaturan">
+        <section className="grid gap-3 rounded-3xl bg-curtain-deep/70 p-4 md:grid-cols-2 md:gap-6 md:p-7" aria-label="Pengaturan">
           {(room.amHost || room.everyone) && (
             <p className="text-xs font-bold text-flash md:col-span-2">
               {room.amHost ? "Kamu pembuat room" : "Semua orang di room ini boleh mengatur"}
               {room.amHost && room.everyone ? ". Semua orang boleh ikut mengatur." : ""}
             </p>
           )}
-          <div className="md:col-span-2">
-            <Field label="Bingkai">
-              <FramePicker
-                people={stripPeople}
-                shots={thumbShots}
-                caption={settings.caption}
-                value={settings.frame}
-                disabled={shooting}
-                onChange={(frame) => updateSettings({ frame })}
-              />
-            </Field>
-          </div>
 
-          <Field label="Filter">
+          <Section
+            title="Pengaturan foto"
+            value={`${settings.shots} foto · ${settings.countdown} detik`}
+            className="md:col-span-2"
+          >
+            <div className="grid gap-4 md:grid-cols-2 md:gap-6">
+              <Field label="Jumlah foto">
+                <div className="flex flex-wrap gap-2">
+                  {SHOT_OPTIONS.map((n) => (
+                    <Chip
+                      key={n}
+                      pressed={settings.shots === n}
+                      disabled={phase !== "idle"}
+                      onClick={() => updateSettings({ shots: n })}
+                    >
+                      {n} foto
+                    </Chip>
+                  ))}
+                </div>
+              </Field>
+
+              <Field label="Hitung mundur">
+                <div className="flex flex-wrap gap-2">
+                  {COUNTDOWN_OPTIONS.map((n) => (
+                    <Chip
+                      key={n}
+                      pressed={settings.countdown === n}
+                      disabled={shooting}
+                      onClick={() => updateSettings({ countdown: n })}
+                    >
+                      {n} detik
+                    </Chip>
+                  ))}
+                </div>
+              </Field>
+
+              <Field label="Format hasil">
+                <div className="flex flex-wrap gap-2">
+                  {(Object.keys(FORMATS) as ResultFormat[]).map((fmt) => (
+                    <Chip key={fmt} pressed={settings.format === fmt} disabled={shooting} onClick={() => updateSettings({ format: fmt })}>
+                      {FORMATS[fmt]}
+                    </Chip>
+                  ))}
+                </div>
+              </Field>
+
+              <Field label="Tulisan di bawah strip" htmlFor="caption">
+                <input
+                  id="caption"
+                  value={settings.caption}
+                  maxLength={CAPTION_MAX}
+                  disabled={shooting}
+                  onChange={(e) => updateSettings({ caption: e.target.value })}
+                  className="w-full max-w-md rounded-full border-2 border-paper/30 bg-curtain px-5 py-2.5 text-base text-paper focus:border-flash focus:outline-none disabled:opacity-50"
+                />
+              </Field>
+            </div>
+          </Section>
+
+          <Section title="Bingkai" value={theme.label} className="md:col-span-2">
+            <FramePicker
+              people={stripPeople}
+              shots={thumbShots}
+              caption={settings.caption}
+              value={settings.frame}
+              disabled={shooting}
+              onChange={(frame) => updateSettings({ frame })}
+            />
+          </Section>
+
+          <Section title="Filter" value={FILTERS[settings.filter].label} className="md:col-span-2">
             <div className="flex flex-wrap gap-2">
               {(Object.keys(FILTERS) as FilterId[]).map((id) => (
                 <Chip
@@ -955,140 +1147,44 @@ export function Booth({
                 </Chip>
               ))}
             </div>
-          </Field>
+          </Section>
 
-          <div className="md:col-span-2">
-            <Field label="Efek wajah">
-              <div className="flex flex-wrap gap-2">
-                <Chip pressed={settings.effect === NO_EFFECT} disabled={shooting} onClick={() => updateSettings({ effect: NO_EFFECT })}>
-                  Tanpa efek
-                </Chip>
-                {EFFECT_LIST.map((e) => (
-                  <Chip key={e.id} pressed={settings.effect === e.id} disabled={shooting} onClick={() => updateSettings({ effect: e.id })}>
-                    {e.label}
-                  </Chip>
-                ))}
-              </div>
-              <span className="text-xs text-paper/70">
-                Wajah dideteksi di perangkat masing-masing, lalu efeknya tampil langsung di kamera dan ikut di hasil foto.
-                Pertama kali perlu memuat ±4 MB ke browser (dan ±12 MB bila belum memakai background); tidak disimpan sebagai berkas.
-              </span>
-            </Field>
-          </div>
-
-          <Field label="Jumlah foto">
-            <div className="flex flex-wrap gap-2">
-              {SHOT_OPTIONS.map((n) => (
-                <Chip
-                  key={n}
-                  pressed={settings.shots === n}
-                  disabled={phase !== "idle"}
-                  onClick={() => updateSettings({ shots: n })}
-                >
-                  {n} foto
-                </Chip>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Format hasil">
-            <div className="flex flex-wrap gap-2">
-              {(Object.keys(FORMATS) as ResultFormat[]).map((f) => (
-                <Chip key={f} pressed={settings.format === f} disabled={shooting} onClick={() => updateSettings({ format: f })}>
-                  {FORMATS[f]}
-                </Chip>
-              ))}
-            </div>
-          </Field>
-
-          <Field label="Hitung mundur">
-            <div className="flex flex-wrap gap-2">
-              {COUNTDOWN_OPTIONS.map((n) => (
-                <Chip
-                  key={n}
-                  pressed={settings.countdown === n}
-                  disabled={shooting}
-                  onClick={() => updateSettings({ countdown: n })}
-                >
-                  {n} detik
-                </Chip>
-              ))}
-            </div>
-          </Field>
-
-          <div className="md:col-span-2">
-            <Field label="Background">
-              <div className="flex flex-wrap gap-2">
+          <Section title="Background" value={getBackground(settings.background)?.label ?? "Asli"} className="md:col-span-2" last>
+            <div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
+              <BackgroundChip
+                label="Asli"
+                pressed={settings.background === NO_BACKGROUND}
+                disabled={shooting}
+                onClick={() => updateSettings({ background: NO_BACKGROUND })}
+              />
+              {BACKGROUND_LIST.map((bg) => (
                 <BackgroundChip
-                  label="Asli"
-                  pressed={settings.background === NO_BACKGROUND}
+                  key={bg.id}
+                  label={bg.label}
+                  src={bg.src}
+                  pressed={settings.background === bg.id}
                   disabled={shooting}
-                  onClick={() => updateSettings({ background: NO_BACKGROUND })}
+                  onClick={() => updateSettings({ background: bg.id })}
                 />
-                {BACKGROUND_LIST.map((bg) => (
-                  <BackgroundChip
-                    key={bg.id}
-                    label={bg.label}
-                    src={bg.src}
-                    pressed={settings.background === bg.id}
-                    disabled={shooting}
-                    onClick={() => updateSettings({ background: bg.id })}
-                  />
-                ))}
-              </div>
-              <span className="text-xs text-paper/70">
-                Latar ruangan tiap orang diganti dengan pemandangan yang sama dan menyambung antar foto. Diproses di
-                perangkat masing-masing; pertama kali perlu memuat ±12 MB ke browser; tidak disimpan sebagai berkas.
-              </span>
-            </Field>
-          </div>
-
-          <Field label="Tulisan di bawah strip" htmlFor="caption">
-            <input
-              id="caption"
-              value={settings.caption}
-              maxLength={CAPTION_MAX}
-              disabled={shooting}
-              onChange={(e) => updateSettings({ caption: e.target.value })}
-              className="w-full max-w-md rounded-full border-2 border-paper/30 bg-curtain px-5 py-2.5 text-paper focus:border-flash focus:outline-none disabled:opacity-50"
-            />
-          </Field>
-
-          <div className="flex flex-wrap items-center gap-4 md:col-span-2">
-            {phase === "idle" && (
-              <button
-                type="button"
-                onClick={start}
-                disabled={!canStart}
-                className="rounded-full bg-flash px-9 py-4 text-lg font-bold text-ink shadow-[0_6px_0_0_var(--color-ink)] transition-transform active:translate-y-1 active:shadow-[0_2px_0_0_var(--color-ink)] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Mulai foto
-              </button>
-            )}
-            {micButton}
-            {cameraButton}
-            {phase === "idle" && !canStart && !solo && (
-              <span className="text-sm text-paper/70">Tombol foto aktif setelah minimal satu teman tersambung.</span>
-            )}
-          </div>
+              ))}
+            </div>
+            <span className="text-xs text-paper/70">
+              Latar ruangan tiap orang diganti dengan pemandangan yang sama dan menyambung antar foto. Diproses di
+              perangkat masing-masing; pertama kali perlu memuat ±12 MB ke browser; tidak disimpan sebagai berkas.
+            </span>
+          </Section>
         </section>
       ) : (
-        <section className="flex flex-col gap-5 rounded-3xl bg-curtain-deep/70 p-5 md:p-7" aria-label="Pengaturan dari pembuat room">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-3 lg:grid-cols-4">
+        <section className="flex flex-col gap-5 rounded-3xl bg-curtain-deep/70 p-4 md:p-7" aria-label="Pengaturan dari pembuat room">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm sm:grid-cols-3 sm:gap-x-6 lg:grid-cols-4">
             <Summary label="Bingkai" value={theme.label} swatch={theme.bg} />
             <Summary label="Filter" value={FILTERS[settings.filter].label} />
-            <Summary label="Efek wajah" value={EFFECTS[settings.effect]?.label ?? "Tanpa efek"} />
             <Summary label="Jumlah foto" value={`${settings.shots} foto`} />
             <Summary label="Format" value={FORMATS[settings.format]} />
             <Summary label="Hitung mundur" value={`${settings.countdown} detik`} />
             <Summary label="Background" value={getBackground(settings.background)?.label ?? "Asli"} />
             <Summary label="Tulisan" value={settings.caption.trim() || "kita"} />
           </dl>
-          <div className="flex flex-wrap items-center gap-4">
-            {micButton}
-            {cameraButton}
-            {phase === "idle" && <span className="text-sm text-paper/80">Menunggu pembuat room memulai foto.</span>}
-          </div>
         </section>
       )}
 
@@ -1118,13 +1214,13 @@ function BackgroundChip({
       aria-pressed={pressed}
       disabled={disabled}
       onClick={onClick}
-      className="group flex flex-col items-center gap-1.5 rounded-xl border-2 border-paper/20 p-1.5 transition-colors hover:border-paper aria-pressed:border-flash aria-pressed:bg-flash/10 disabled:opacity-50"
+      className="group flex w-full flex-col items-center gap-1.5 rounded-xl border-2 border-paper/20 p-1.5 transition-colors hover:border-paper aria-pressed:border-flash aria-pressed:bg-flash/10 disabled:opacity-50 sm:w-auto"
     >
       {src ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={src} alt="" className="h-10 w-[106px] rounded-md object-cover" />
+        <img src={src} alt="" className="h-10 w-full rounded-md object-cover sm:w-[106px]" />
       ) : (
-        <span className="grid h-10 w-[106px] place-items-center rounded-md bg-paper/15 text-[10px] text-paper/80">
+        <span className="grid h-10 w-full place-items-center rounded-md bg-paper/15 text-[10px] text-paper/80 sm:w-[106px]">
           latar asli
         </span>
       )}
@@ -1141,6 +1237,47 @@ function Summary({ label, value, swatch }: { label: string; value: string; swatc
         {swatch && <span className="h-4 w-4 rounded-full border border-paper/40" style={{ backgroundColor: swatch }} />}
         <span className="truncate">{value}</span>
       </dd>
+    </div>
+  );
+}
+
+/**
+ * Bagian pengaturan. Di HP bisa dilipat (menampilkan pilihan saat ini di judulnya) supaya panel tidak panjang;
+ * di layar lebar selalu terbuka.
+ */
+function Section({
+  title,
+  value,
+  className = "",
+  last = false,
+  children,
+}: {
+  title: string;
+  value: string;
+  className?: string;
+  last?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div className={`${className} ${last ? "" : "border-b border-paper/10 pb-3"} md:border-0 md:pb-0`}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+        className="flex min-h-11 w-full items-center justify-between gap-3 text-left md:pointer-events-none md:min-h-0 md:cursor-default"
+      >
+        <span className="text-sm font-bold text-paper/90">{title}</span>
+        <span className="flex min-w-0 items-center gap-2 text-xs text-paper/70 md:hidden">
+          <span className="truncate">{value}</span>
+          <ChevronIcon open={open} />
+        </span>
+      </button>
+      <div id={id} className={`${open ? "flex" : "hidden"} flex-col gap-2.5 pt-1 md:flex md:pt-2.5`}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -1177,7 +1314,7 @@ function Chip({
       aria-pressed={pressed}
       disabled={disabled}
       onClick={onClick}
-      className="rounded-full border-2 border-paper/30 px-4 py-2 text-sm font-medium transition-colors hover:border-paper aria-pressed:border-flash aria-pressed:bg-flash aria-pressed:text-ink disabled:opacity-50"
+      className="min-h-10 rounded-full border-2 border-paper/30 px-4 py-2 text-sm font-medium transition-colors hover:border-paper aria-pressed:border-flash aria-pressed:bg-flash aria-pressed:text-ink disabled:opacity-50"
     >
       {children}
     </button>

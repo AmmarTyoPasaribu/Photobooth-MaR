@@ -26,6 +26,8 @@ export const BACKGROUND_LIST: BackgroundDef[] = [
   { id: "synthwave", label: "Synthwave", src: "/backgrounds/synthwave.svg" },
   { id: "panggung", label: "Panggung", src: "/backgrounds/panggung.svg" },
   { id: "pesta", label: "Pesta", src: "/backgrounds/pesta.svg" },
+  { id: "masjid", label: "Masjid", src: "/backgrounds/masjid.svg" },
+  { id: "dalam-masjid", label: "Dalam masjid", src: "/backgrounds/dalam-masjid.svg" },
 ];
 
 export const BACKGROUNDS: Record<string, BackgroundDef> = Object.fromEntries(BACKGROUND_LIST.map((b) => [b.id, b]));

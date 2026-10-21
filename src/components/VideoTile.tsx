@@ -45,6 +45,7 @@ function FaceOverlay({
         canvas.width = Math.round(w * dpr);
         canvas.height = Math.round(h * dpr);
       }
+      if (w < 1 || h < 1) return; // tile sedang tersembunyi (mis. tahap review)
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
       ctx.setTransform(1, 0, 0, 1, 0, 0);

@@ -40,6 +40,21 @@ function getLandmarker(): Promise<FaceLandmarker> {
   return landmarkerPromise;
 }
 
+/**
+ * Wajah pada foto yang sudah jadi (mis. saat efek baru dipilih di tahap review), dinormalisasi terhadap foto itu.
+ * Foto dari kamera depan sudah dicermin, jadi arahnya sudah sama dengan hasil akhir.
+ */
+export async function detectFaceInPhoto(photo: Blob): Promise<Face | null> {
+  const landmarker = await getLandmarker();
+  const bitmap = await createImageBitmap(photo);
+  try {
+    lastTimestamp = Math.max(performance.now(), lastTimestamp + 1);
+    return faceFromLandmarks(landmarker.detectForVideo(bitmap, lastTimestamp).faceLandmarks[0]);
+  } finally {
+    bitmap.close();
+  }
+}
+
 /** Mulai mengunduh model lebih awal (mis. begitu host memilih efek wajah). */
 export function preloadFaceLandmarker() {
   void getLandmarker().catch((err) => console.warn("[face] model gagal dimuat", err));

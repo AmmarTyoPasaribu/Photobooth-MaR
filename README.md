@@ -39,7 +39,7 @@ Room 1 orang tidak membuat koneksi peer sama sekali; tombol "Mulai foto" langsun
 
 ## Pembuat room (host)
 
-Di mode "Hanya aku" (bawaan, lihat di bawah), hanya pembuat room yang bisa mengubah bingkai, filter, jumlah foto, format, dan tulisan, serta menekan "Mulai foto" dan "Foto lagi". Peserta lain melihat ringkasan pengaturan (baca saja), tombol mikrofon, dan tombol unduh. Identitas host diverifikasi tanpa database, memakai Web Crypto (`src/lib/host.ts`):
+Di mode "Hanya aku" (lihat di bawah), hanya pembuat room yang bisa mengubah bingkai, filter, jumlah foto, format, dan tulisan, serta menekan "Mulai foto" dan "Foto lagi". Peserta lain melihat ringkasan pengaturan (baca saja), tombol mikrofon, dan tombol unduh. Identitas host diverifikasi tanpa database, memakai Web Crypto (`src/lib/host.ts`):
 
 1. Saat "Buat room baru", browser membuat pasangan kunci **ECDSA P-256**. Room id = 10 karakter pertama dari SHA-256(public key), memakai alfabet tanpa karakter mirip (tanpa `l 1 o 0 i`). Private key (JWK) disimpan di `localStorage` dengan kunci `host:<roomId>`, jadi host tetap host setelah refresh. Pengaturan terakhir host juga disimpan, supaya tidak kembali ke bawaan.
 2. Host menaruh `hostPublicKey` dan `hostProof` di presence. `hostProof` adalah tanda tangan atas `<roomId>:<peerId>:<joinedAt>`.
@@ -57,8 +57,8 @@ Saat membuat room, pembuat memilih salah satu (halaman depan, "Siapa yang boleh 
 
 | Mode | Tautan | Perilaku |
 |------|--------|----------|
-| **Hanya aku** (bawaan) | `?m=host` | Hanya pembuat room yang mengubah bingkai, filter, jumlah foto, format, background, tulisan, dan menekan "Mulai foto" / "Foto lagi". Peserta melihat ringkasan baca-saja. |
-| **Semua orang** | `?m=all` | Setiap anggota room bisa mengubah pengaturan, memulai foto, dan mengulang. Tidak perlu menunggu pembuat room. |
+| **Hanya aku** | `?m=host` | Hanya pembuat room yang mengubah bingkai, filter, jumlah foto, format, background, tulisan, dan menekan "Mulai foto" / "Foto lagi". Peserta melihat ringkasan baca-saja. |
+| **Semua orang** (bawaan) | `?m=all` | Setiap anggota room bisa mengubah pengaturan, memulai foto, dan mengulang. Tidak perlu menunggu pembuat room. |
 
 Cara kerjanya:
 
@@ -79,10 +79,11 @@ Cara kerjanya:
 ## Filter, background, dan efek wajah
 
 - **13 filter warna:** Asli, Hitam putih, Vintage, Hangat, Sejuk, Cerah, Pudar, Noir, Sepia, Senja, Lembut, Pastel, Neon. Tampilan kamera memakai CSS, sedangkan hasil foto dihitung per piksel di `src/lib/strip.ts` supaya sama di semua browser. Menambah filter: tambahkan id di `FilterId` (`src/lib/types.ts`), entri di `FILTERS`, dan rumus piksel di `applyFilter` (`src/lib/strip.ts`).
-- **14 background pengganti:** Studio, Ruang tamu, Kafe, Pantai, Senja kota, Hutan, Gunung, Sakura, Pelangi, Bawah laut, Luar angkasa, Synthwave, Panggung, Pesta (`public/backgrounds/`, didaftarkan di `src/lib/backgrounds.ts`).
-- **10 efek wajah:** telinga anjing (hidung dan lidah saat mulut terbuka), telinga kucing (dengan kumis), telinga kelinci, telinga beruang, topi pesta, mahkota, topi sulap, kacamata hitam, kacamata hati, mahkota bunga. Dipilih host, tampil langsung di kamera semua orang, dan ikut di hasil foto. Bisa diganti di tahap review tanpa memotret ulang.
+- **16 background pengganti:** Studio, Ruang tamu, Kafe, Pantai, Senja kota, Hutan, Gunung, Sakura, Pelangi, Bawah laut, Luar angkasa, Synthwave, Panggung, Pesta, Masjid, Dalam masjid (`public/backgrounds/`, didaftarkan di `src/lib/backgrounds.ts`).
+- **12 efek wajah:** telinga anjing (hidung dan lidah saat mulut terbuka), telinga kucing (dengan kumis), telinga kelinci, telinga beruang, topi pesta, mahkota, topi sulap, kacamata hitam, kacamata hati, mahkota bunga, songkok / peci hitam, dan mukena. **Dipilih tiap orang untuk dirinya sendiri** (panel "Efek wajah kamu", tersedia untuk semua peserta, bukan hanya host): pilihan dikirim ke teman lewat pesan `effect`, tampil langsung di kamera semua orang, dan ikut di hasil foto. Bisa diganti di tahap review tanpa memotret ulang (wajah dicari dari foto yang sudah ada).
+- **12 bingkai:** 8 bingkai umum dan 4 bernuansa Islami: Masjid (hijau zamrud dan emas), Ramadan (biru malam dengan bulan sabit dan lentera), Lebaran (krem dengan ketupat), dan Putih emas. Memakai pola geometris bintang segi delapan (`pattern: "islamic"`) dan stiker di `public/frames/` (lentera, bulan bintang, masjid, ketupat).
 
-Cara kerja efek wajah (`src/lib/face.ts`, `face-math.ts`, `face-effects.ts`):
+Cara kerja efek wajah (`src/lib/face.ts`, `face-math.ts`, `face-effects.ts`). Efek bersifat personal, jadi bukan bagian dari pengaturan host:
 
 1. Tiap perangkat mendeteksi wajahnya sendiri dengan MediaPipe Face Landmarker (model ±3,7 MB di `public/models/face_landmarker.task`, runtime WASM dibagi dengan segmentasi). Hanya diunduh saat efek dipilih.
 2. Hanya beberapa titik wajah (dahi, dagu, pipi, hidung, mulut, mata, ±150 byte) yang dikirim ke teman lewat data channel: terus-menerus untuk tampilan langsung (`face-live`, ±9 kali per detik), dan sekali per jepretan untuk hasil foto (`face`).

@@ -71,7 +71,7 @@ export function ResultGallery({ images, zipName, onSaved }: Props) {
               href={img.url}
               download={img.name}
               onClick={() => onSaved?.([img.name])}
-              className="rounded-full border-2 border-paper px-5 py-2 text-sm font-bold transition-colors hover:bg-paper hover:text-ink"
+              className="rounded-full border-2 border-paper px-5 py-2.5 text-sm font-bold transition-colors hover:bg-paper hover:text-ink"
             >
               Unduh {img.label.toLowerCase()}
             </a>
@@ -85,4 +85,5 @@ export function ResultGallery({ images, zipName, onSaved }: Props) {
   );
 }
 
-const PRIMARY = "rounded-full bg-flash px-7 py-3 font-bold text-ink shadow-[0_5px_0_0_var(--color-curtain-deep)]";
+const PRIMARY =
+  "block w-full max-w-xs rounded-full bg-flash px-7 py-3.5 text-center font-bold text-ink shadow-[0_5px_0_0_var(--color-curtain-deep)] sm:w-auto";

@@ -9,14 +9,14 @@ import { DEFAULT_CAPACITY, MAX_CAPACITY, MIN_CAPACITY, parseCapacity } from "@/l
 const SIZES = Array.from({ length: MAX_CAPACITY - MIN_CAPACITY + 1 }, (_, i) => MIN_CAPACITY + i);
 
 const MODES: { value: RoomMode; label: string; hint: string }[] = [
-  { value: "host", label: "Hanya aku", hint: "Hanya pembuat room yang memilih bingkai, filter, background, dan memulai foto." },
   { value: "all", label: "Semua orang", hint: "Siapa pun di room bisa mengubah pengaturan dan memulai foto. Edit terbaru yang berlaku." },
+  { value: "host", label: "Hanya aku", hint: "Hanya pembuat room yang memilih bingkai, filter, background, dan memulai foto." },
 ];
 
 export function StartForm() {
   const router = useRouter();
   const [people, setPeople] = useState(DEFAULT_CAPACITY);
-  const [mode, setMode] = useState<RoomMode>("host");
+  const [mode, setMode] = useState<RoomMode>("all");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

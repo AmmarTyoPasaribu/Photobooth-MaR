@@ -23,6 +23,8 @@ export const EFFECT_LIST: EffectDef[] = [
   { id: "shades", label: "Kacamata hitam" },
   { id: "hearts", label: "Kacamata hati" },
   { id: "flowers", label: "Mahkota bunga" },
+  { id: "songkok", label: "Songkok / peci hitam" },
+  { id: "mukena", label: "Mukena" },
 ];
 
 export const EFFECTS: Record<string, EffectDef> = Object.fromEntries(EFFECT_LIST.map((e) => [e.id, e]));
@@ -330,10 +332,110 @@ function flowers(ctx: Ctx) {
   });
 }
 
+/** Songkok (peci hitam): beludru hitam yang sedikit mengerucut ke atas, duduk di garis dahi. */
+function songkok(ctx: Ctx) {
+  ctx.fillStyle = "#17120f";
+  ctx.beginPath();
+  ctx.moveTo(-0.47, 0.07);
+  ctx.bezierCurveTo(-0.52, -0.1, -0.45, -0.34, -0.35, -0.42);
+  ctx.lineTo(0.35, -0.42);
+  ctx.bezierCurveTo(0.45, -0.34, 0.52, -0.1, 0.47, 0.07);
+  ctx.quadraticCurveTo(0, 0.17, -0.47, 0.07);
+  ctx.closePath();
+  ctx.fill();
+  // permukaan atas
+  ctx.fillStyle = "#2a221c";
+  ctx.beginPath();
+  ctx.ellipse(0, -0.42, 0.35, 0.05, 0, 0, Math.PI * 2);
+  ctx.fill();
+  // kilau beludru
+  ctx.fillStyle = "rgb(255 255 255 / 0.09)";
+  ctx.beginPath();
+  ctx.roundRect(-0.36, -0.34, 0.16, 0.33, 0.08);
+  ctx.fill();
+  // tepi bawah
+  ctx.strokeStyle = "#3b3028";
+  ctx.lineWidth = 0.022;
+  ctx.beginPath();
+  ctx.moveTo(-0.47, 0.07);
+  ctx.quadraticCurveTo(0, 0.17, 0.47, 0.07);
+  ctx.stroke();
+}
+
+/** Mukena putih: kerudung yang membingkai wajah, melebar di bahu, dan berakhir melengkung di dada. */
+function mukena(ctx: Ctx, local: Local, f: PxFace) {
+  const chinY = local(f.c)[1];
+  const top = 0.07;
+  const bottom = chinY - 0.02;
+  const cy = (top + bottom) / 2;
+  const ry = (bottom - top) / 2;
+  const hem = chinY + 1.05; // ujung kain di dada
+
+  const cloth = ctx.createLinearGradient(0, -0.45, 0, hem);
+  cloth.addColorStop(0, "#ffffff");
+  cloth.addColorStop(0.55, "#f3eefc");
+  cloth.addColorStop(1, "#ddd3f3");
+
+  const outline = () => {
+    ctx.beginPath();
+    ctx.moveTo(-0.97, hem);
+    ctx.bezierCurveTo(-1.04, chinY + 0.5, -0.94, chinY + 0.1, -0.76, chinY - 0.16);
+    ctx.bezierCurveTo(-0.8, 0.3, -0.72, -0.06, -0.52, -0.3);
+    ctx.bezierCurveTo(-0.32, -0.52, 0.32, -0.52, 0.52, -0.3);
+    ctx.bezierCurveTo(0.72, -0.06, 0.8, 0.3, 0.76, chinY - 0.16);
+    ctx.bezierCurveTo(0.94, chinY + 0.1, 1.04, chinY + 0.5, 0.97, hem);
+    ctx.quadraticCurveTo(0, hem + 0.22, -0.97, hem);
+    ctx.closePath();
+  };
+
+  outline();
+  ctx.ellipse(0, cy, 0.53, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = cloth;
+  ctx.fill("evenodd");
+
+  // lipatan kain di dada dan sisi kepala
+  ctx.strokeStyle = "rgb(150 130 205 / 0.26)";
+  ctx.lineWidth = 0.016;
+  ctx.lineCap = "round";
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(side * 0.66, 0.2);
+    ctx.quadraticCurveTo(side * 0.78, 0.7, side * 0.74, chinY - 0.16);
+    ctx.stroke();
+    for (const x of [0.3, 0.55, 0.8]) {
+      ctx.beginPath();
+      ctx.moveTo(side * x, chinY + 0.12);
+      ctx.quadraticCurveTo(side * (x + 0.03), chinY + 0.55, side * (x + 0.02), hem + 0.04);
+      ctx.stroke();
+    }
+  }
+  // tepi luar kerudung
+  outline();
+  ctx.strokeStyle = "#cdc1ec";
+  ctx.lineWidth = 0.018;
+  ctx.stroke();
+  // garis tepi wajah
+  ctx.strokeStyle = "#cfc3ee";
+  ctx.lineWidth = 0.02;
+  ctx.beginPath();
+  ctx.ellipse(0, cy, 0.53, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  // renda emas tipis di tepi wajah
+  ctx.strokeStyle = "#e6c36a";
+  ctx.lineWidth = 0.014;
+  ctx.setLineDash([0.018, 0.034]);
+  ctx.beginPath();
+  ctx.ellipse(0, cy, 0.56, ry + 0.03, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
 /** Menggambar efek `id` pada wajah `face` (koordinat piksel ke canvas `ctx`). Tidak mengubah state canvas. */
 export function drawFaceEffect(ctx: Ctx, id: string, face: PxFace) {
   if (!isEffect(id)) return;
   const { origin, angle, width, local } = faceFrame(face);
+  // Titik tidak valid (mis. kotak tampilan berukuran nol) tidak digambar.
+  if (![origin[0], origin[1], angle, width].every(Number.isFinite)) return;
   ctx.save();
   ctx.translate(origin[0], origin[1]);
   ctx.rotate(angle);
@@ -369,6 +471,12 @@ export function drawFaceEffect(ctx: Ctx, id: string, face: PxFace) {
       break;
     case "flowers":
       flowers(ctx);
+      break;
+    case "songkok":
+      songkok(ctx);
+      break;
+    case "mukena":
+      mukena(ctx, local, face);
       break;
   }
   ctx.restore();

@@ -24,8 +24,6 @@ export type BoothSettings = {
   filter: FilterId;
   shots: number;
   caption: string;
-  /** Efek wajah (`src/lib/face-effects.ts`), atau "none". */
-  effect: string;
   /** Lama hitung mundur per jepretan, dalam detik (`COUNTDOWN_OPTIONS`). */
   countdown: number;
   /** "strip": semua jepretan dalam satu gambar. "single": satu gambar per jepretan. */
@@ -50,6 +48,8 @@ export type BoothMessage =
   | { type: "retake"; index: number; startAt?: number; countdown?: number }
   | { type: "reset" }
   /** Pengukuran selisih jam antar perangkat: `t` = jam pengirim ping, `r` = jam penjawab. */
+  /** Efek wajah yang dipilih pengirim untuk dirinya sendiri (`src/lib/face-effects.ts`), atau "none". */
+  | { type: "effect"; effect: string }
   /** Wajah pada foto jepretan `index` milik pengirim (null = tidak terdeteksi), untuk efek wajah di hasil. */
   | { type: "face"; index: number; face: Face | null }
   /** Wajah pada tampilan kamera langsung pengirim (arah selfie), untuk efek wajah di tile-nya. */
