@@ -26,7 +26,7 @@ import {
 
 type Handlers = {
   onMessage: (from: string, message: BoothMessage) => void;
-  onPhoto: (from: string, index: number, blob: Blob, kind: BlobKind) => void;
+  onPhoto: (from: string, index: number, blob: Blob, kind: BlobKind, frame?: number) => void;
   /** Data channel ke `peerId` baru terbuka (tempat yang pas untuk mengirim pengaturan). */
   onChannelOpen: (peerId: string) => void;
   /** Kunci host termuat (browser ini pembuat room), sebelum masuk ke channel. */
@@ -349,7 +349,7 @@ export function usePeerRoom(
     const setupDataChannel = (peer: Peer, dc: RTCDataChannel) => {
       dc.binaryType = "arraybuffer";
       peer.dc = dc;
-      const receiver = createReceiver((index, blob, kind) => handlersRef.current.onPhoto(peer.id, index, blob, kind));
+      const receiver = createReceiver((index, blob, kind, frame) => handlersRef.current.onPhoto(peer.id, index, blob, kind, frame));
 
       const onOpen = () => {
         publish();
@@ -857,10 +857,10 @@ export function usePeerRoom(
   }, []);
 
   /** Foto (atau maskernya) dikirim ke semua teman; tiap data channel punya antreannya sendiri. */
-  const sendPhoto = useCallback((index: number, blob: Blob, kind: BlobKind = "photo") => {
+  const sendPhoto = useCallback((index: number, blob: Blob, kind: BlobKind = "photo", frame?: number) => {
     for (const peer of peersRef.current.values()) {
       peer.sendQueue = peer.sendQueue
-        .then(() => (peer.dc ? sendBlob(peer.dc, index, blob, kind) : undefined))
+        .then(() => (peer.dc ? sendBlob(peer.dc, index, blob, kind, frame) : undefined))
         .catch((err) => console.error("[sendPhoto]", err));
     }
   }, []);

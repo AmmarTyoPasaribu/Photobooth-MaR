@@ -24,7 +24,17 @@ export const EFFECT_LIST: EffectDef[] = [
   { id: "hearts", label: "Kacamata hati" },
   { id: "flowers", label: "Mahkota bunga" },
   { id: "songkok", label: "Songkok / peci hitam" },
+  { id: "kopiah", label: "Peci putih (kopiah haji)" },
   { id: "mukena", label: "Mukena" },
+  { id: "hijab-pink", label: "Hijab pink" },
+  { id: "hijab-biru", label: "Hijab biru" },
+  { id: "hijab-hijau", label: "Hijab hijau" },
+  { id: "hijab-ungu", label: "Hijab ungu" },
+  { id: "santa", label: "Topi Santa" },
+  { id: "beard", label: "Jenggot" },
+  { id: "round", label: "Kacamata bulat" },
+  { id: "stars", label: "Kacamata bintang" },
+  { id: "square", label: "Kacamata kotak" },
 ];
 
 export const EFFECTS: Record<string, EffectDef> = Object.fromEntries(EFFECT_LIST.map((e) => [e.id, e]));
@@ -430,6 +440,246 @@ function mukena(ctx: Ctx, local: Local, f: PxFace) {
   ctx.setLineDash([]);
 }
 
+/** Peci putih (kopiah haji): rajutan putih yang bulat, sedikit lebih tinggi dari songkok. */
+function kopiah(ctx: Ctx) {
+  ctx.fillStyle = "#f7f4ea";
+  ctx.beginPath();
+  ctx.moveTo(-0.46, 0.07);
+  ctx.bezierCurveTo(-0.5, -0.12, -0.44, -0.38, -0.3, -0.46);
+  ctx.lineTo(0.3, -0.46);
+  ctx.bezierCurveTo(0.44, -0.38, 0.5, -0.12, 0.46, 0.07);
+  ctx.quadraticCurveTo(0, 0.17, -0.46, 0.07);
+  ctx.closePath();
+  ctx.fill();
+  ctx.save();
+  ctx.clip();
+  // rajutan: garis-garis tipis
+  ctx.strokeStyle = "rgb(150 140 120 / 0.35)";
+  ctx.lineWidth = 0.008;
+  for (let x = -0.5; x <= 0.5; x += 0.045) {
+    ctx.beginPath();
+    ctx.moveTo(x, -0.5);
+    ctx.lineTo(x * 1.08, 0.2);
+    ctx.stroke();
+  }
+  for (let y = -0.45; y <= 0.1; y += 0.05) {
+    ctx.beginPath();
+    ctx.moveTo(-0.5, y);
+    ctx.lineTo(0.5, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+  ctx.fillStyle = "#ece7d8";
+  ctx.beginPath();
+  ctx.ellipse(0, -0.46, 0.3, 0.045, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#cfc8b4";
+  ctx.lineWidth = 0.022;
+  ctx.beginPath();
+  ctx.moveTo(-0.46, 0.07);
+  ctx.quadraticCurveTo(0, 0.17, 0.46, 0.07);
+  ctx.stroke();
+}
+
+/** Hijab berwarna: kerudung yang membingkai wajah dan jatuh membentuk segitiga di dada. */
+function hijab(ctx: Ctx, local: Local, f: PxFace, light: string, dark: string) {
+  const chinY = local(f.c)[1];
+  const top = 0.05;
+  const bottom = chinY - 0.03;
+  const cy = (top + bottom) / 2;
+  const ry = (bottom - top) / 2;
+  const tip = chinY + 0.95;
+
+  const cloth = ctx.createLinearGradient(0, -0.45, 0, tip);
+  cloth.addColorStop(0, light);
+  cloth.addColorStop(1, dark);
+
+  const outline = () => {
+    ctx.beginPath();
+    ctx.moveTo(0, tip);
+    ctx.bezierCurveTo(-0.3, chinY + 0.75, -0.7, chinY + 0.4, -0.8, chinY - 0.1);
+    ctx.bezierCurveTo(-0.82, 0.3, -0.72, -0.06, -0.52, -0.3);
+    ctx.bezierCurveTo(-0.32, -0.5, 0.32, -0.5, 0.52, -0.3);
+    ctx.bezierCurveTo(0.72, -0.06, 0.82, 0.3, 0.8, chinY - 0.1);
+    ctx.bezierCurveTo(0.7, chinY + 0.4, 0.3, chinY + 0.75, 0, tip);
+    ctx.closePath();
+  };
+
+  outline();
+  ctx.ellipse(0, cy, 0.52, ry, 0, 0, Math.PI * 2);
+  ctx.fillStyle = cloth;
+  ctx.fill("evenodd");
+
+  // lipatan
+  ctx.strokeStyle = "rgb(255 255 255 / 0.22)";
+  ctx.lineWidth = 0.016;
+  ctx.lineCap = "round";
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(side * 0.62, 0.15);
+    ctx.quadraticCurveTo(side * 0.8, 0.7, side * 0.72, chinY + 0.1);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(side * 0.3, chinY + 0.1);
+    ctx.quadraticCurveTo(side * 0.34, chinY + 0.5, side * 0.06, tip - 0.06);
+    ctx.stroke();
+  }
+  outline();
+  ctx.strokeStyle = dark;
+  ctx.lineWidth = 0.02;
+  ctx.stroke();
+  ctx.strokeStyle = "rgb(255 255 255 / 0.5)";
+  ctx.lineWidth = 0.016;
+  ctx.beginPath();
+  ctx.ellipse(0, cy, 0.52, ry, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  // bros kecil di dada
+  ctx.fillStyle = "#ffd56b";
+  ctx.beginPath();
+  ctx.arc(0.34, chinY + 0.22, 0.04, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+/** Topi Santa: merah dengan bulu putih, ujungnya jatuh ke samping. */
+function santa(ctx: Ctx) {
+  ctx.fillStyle = "#d62828";
+  ctx.beginPath();
+  ctx.moveTo(-0.46, 0.0);
+  ctx.bezierCurveTo(-0.46, -0.36, -0.2, -0.68, 0.16, -0.64);
+  ctx.bezierCurveTo(0.5, -0.6, 0.66, -0.3, 0.7, 0.0);
+  ctx.lineTo(0.46, 0.0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "rgb(0 0 0 / 0.12)";
+  ctx.beginPath();
+  ctx.moveTo(0.1, -0.62);
+  ctx.bezierCurveTo(0.45, -0.58, 0.62, -0.3, 0.66, 0.0);
+  ctx.lineTo(0.46, 0.0);
+  ctx.bezierCurveTo(0.42, -0.25, 0.3, -0.5, 0.1, -0.62);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.arc(0.71, 0.04, 0.095, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.roundRect(-0.53, -0.1, 1.06, 0.18, 0.09);
+  ctx.fill();
+  ctx.strokeStyle = "#e5e5ee";
+  ctx.lineWidth = 0.012;
+  ctx.stroke();
+}
+
+/** Jenggot gelap: rahang hingga dagu, dengan kumis dan lubang untuk mulut. */
+function beard(ctx: Ctx, local: Local, f: PxFace) {
+  const chinY = local(f.c)[1];
+  const l = local(f.l);
+  const r = local(f.r);
+  const m = local(f.m);
+  const mouthRy = 0.045 + f.open * 0.6;
+  ctx.fillStyle = "#2b1b14";
+  ctx.beginPath();
+  ctx.moveTo(l[0] - 0.01, l[1] - 0.12);
+  ctx.bezierCurveTo(l[0] - 0.03, l[1] + 0.4, -0.32, chinY + 0.32, 0, chinY + 0.38);
+  ctx.bezierCurveTo(0.32, chinY + 0.32, r[0] + 0.03, r[1] + 0.4, r[0] + 0.01, r[1] - 0.12);
+  ctx.lineTo(0.38, m[1] - 0.05);
+  ctx.bezierCurveTo(0.2, m[1] - 0.15, -0.2, m[1] - 0.15, -0.38, m[1] - 0.05);
+  ctx.closePath();
+  ctx.ellipse(m[0], m[1] + 0.01, 0.14, mouthRy, 0, 0, Math.PI * 2);
+  ctx.fill("evenodd");
+  // kumis
+  ctx.beginPath();
+  ctx.moveTo(m[0] - 0.3, m[1] - 0.03);
+  ctx.bezierCurveTo(m[0] - 0.2, m[1] - 0.17, m[0] - 0.06, m[1] - 0.11, m[0], m[1] - 0.07);
+  ctx.bezierCurveTo(m[0] + 0.06, m[1] - 0.11, m[0] + 0.2, m[1] - 0.17, m[0] + 0.3, m[1] - 0.03);
+  ctx.bezierCurveTo(m[0] + 0.2, m[1] - 0.02, m[0] + 0.08, m[1] - 0.06, m[0], m[1] - 0.03);
+  ctx.bezierCurveTo(m[0] - 0.08, m[1] - 0.06, m[0] - 0.2, m[1] - 0.02, m[0] - 0.3, m[1] - 0.03);
+  ctx.closePath();
+  ctx.fill();
+  // kilau rambut
+  ctx.strokeStyle = "rgb(255 255 255 / 0.1)";
+  ctx.lineWidth = 0.012;
+  for (let i = -3; i <= 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(i * 0.1, m[1] + 0.12);
+    ctx.quadraticCurveTo(i * 0.12, chinY + 0.1, i * 0.08, chinY + 0.3);
+    ctx.stroke();
+  }
+}
+
+function roundGlasses(ctx: Ctx, local: Local, f: PxFace) {
+  const e = local(f.e);
+  ctx.lineWidth = 0.03;
+  ctx.strokeStyle = "#c9962b";
+  ctx.fillStyle = "rgb(255 255 255 / 0.16)";
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(e[0] + side * 0.2, e[1], 0.14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.lineWidth = 0.024;
+  ctx.beginPath();
+  ctx.arc(e[0], e[1] - 0.07, 0.07, Math.PI * 1.15, Math.PI * 1.85);
+  ctx.stroke();
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.moveTo(e[0] + side * 0.34, e[1] - 0.02);
+    ctx.lineTo(e[0] + side * 0.5, e[1] - 0.04);
+    ctx.stroke();
+  }
+}
+
+function starGlasses(ctx: Ctx, local: Local, f: PxFace) {
+  const e = local(f.e);
+  const star = (cx: number, cy: number, r: number) => {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const rr = i % 2 === 0 ? r : r * 0.45;
+      const a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const x = cx + Math.cos(a) * rr;
+      const y = cy + Math.sin(a) * rr;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  };
+  ctx.lineWidth = 0.028;
+  ctx.strokeStyle = "#ff4f8b";
+  ctx.fillStyle = "rgb(255 214 10 / 0.92)";
+  for (const side of [-1, 1]) {
+    star(e[0] + side * 0.2, e[1] + 0.01, 0.19);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "#ff4f8b";
+  ctx.lineWidth = 0.022;
+  ctx.beginPath();
+  ctx.moveTo(e[0] - 0.05, e[1] - 0.02);
+  ctx.lineTo(e[0] + 0.05, e[1] - 0.02);
+  ctx.stroke();
+}
+
+function squareGlasses(ctx: Ctx, local: Local, f: PxFace) {
+  const e = local(f.e);
+  ctx.lineWidth = 0.036;
+  ctx.strokeStyle = "#16161d";
+  ctx.fillStyle = "rgb(170 215 255 / 0.2)";
+  for (const side of [-1, 1]) {
+    ctx.beginPath();
+    ctx.roundRect(e[0] + side * 0.2 - 0.15, e[1] - 0.09, 0.3, 0.2, 0.035);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.moveTo(e[0] - 0.05, e[1] - 0.03);
+  ctx.lineTo(e[0] + 0.05, e[1] - 0.03);
+  ctx.moveTo(e[0] - 0.35, e[1] - 0.04);
+  ctx.lineTo(e[0] - 0.5, e[1] - 0.05);
+  ctx.moveTo(e[0] + 0.35, e[1] - 0.04);
+  ctx.lineTo(e[0] + 0.5, e[1] - 0.05);
+  ctx.stroke();
+}
+
 /** Menggambar efek `id` pada wajah `face` (koordinat piksel ke canvas `ctx`). Tidak mengubah state canvas. */
 export function drawFaceEffect(ctx: Ctx, id: string, face: PxFace) {
   if (!isEffect(id)) return;
@@ -477,6 +727,36 @@ export function drawFaceEffect(ctx: Ctx, id: string, face: PxFace) {
       break;
     case "mukena":
       mukena(ctx, local, face);
+      break;
+    case "kopiah":
+      kopiah(ctx);
+      break;
+    case "hijab-pink":
+      hijab(ctx, local, face, "#ffb3d1", "#e0568f");
+      break;
+    case "hijab-biru":
+      hijab(ctx, local, face, "#a9d3ff", "#3b7fd6");
+      break;
+    case "hijab-hijau":
+      hijab(ctx, local, face, "#a8e6c1", "#2f9a69");
+      break;
+    case "hijab-ungu":
+      hijab(ctx, local, face, "#d2bcff", "#7a50d6");
+      break;
+    case "santa":
+      santa(ctx);
+      break;
+    case "beard":
+      beard(ctx, local, face);
+      break;
+    case "round":
+      roundGlasses(ctx, local, face);
+      break;
+    case "stars":
+      starGlasses(ctx, local, face);
+      break;
+    case "square":
+      squareGlasses(ctx, local, face);
       break;
   }
   ctx.restore();

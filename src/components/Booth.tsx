@@ -10,11 +10,12 @@ import { detectFace, detectFaceInPhoto, preloadFaceLandmarker } from "@/lib/face
 import { EFFECT_LIST, EFFECTS, isEffect, NO_EFFECT } from "@/lib/face-effects";
 import { compactFace, cropToPhoto, flipFace, sanitizeFace, type Face } from "@/lib/face-math";
 import { FaceStore } from "@/lib/face-store";
+import { sanitizeOverlays, type Overlay } from "@/lib/overlays";
 import { DEFAULT_FRAME_ID, FRAMES, getFrame } from "@/lib/frames";
 import { acceptsControlMessage, readHostSettings, saveHostSettings, type RoomMode } from "@/lib/host";
 import { defaultFormatFor, defaultShotsFor, getLayout, type ResultFormat } from "@/lib/layout";
 import { makePersonMask, preloadSegmenter } from "@/lib/segment";
-import { composeStrip, FILTERS } from "@/lib/strip";
+import { composeStrip, FILTERS, renderStrip } from "@/lib/strip";
 import type { BlobKind } from "@/lib/transfer";
 import {
   COUNTDOWN_OPTIONS,
@@ -28,6 +29,7 @@ import {
 } from "@/lib/types";
 import { Brand } from "./Brand";
 import { CameraSwitchIcon, ChevronIcon, MicIcon, MicOffIcon, ShareIcon } from "./Icons";
+import { ClipPanel } from "./ClipPanel";
 import { DecorTile } from "./DecorTile";
 import { FramePicker } from "./FramePicker";
 import { ResultGallery, type ResultImage } from "./ResultGallery";
@@ -36,6 +38,28 @@ import { VideoTile } from "./VideoTile";
 type Phase = "idle" | "shooting" | "review";
 type Session = { order: string[]; shots: number };
 type Photos = Map<string, (Blob | null)[]>;
+/** Frame rekaman gerak: peserta → jepretan → nomor frame. */
+type Clips = Map<string, (Blob | undefined)[][]>;
+
+function withClip(prev: Clips, id: string, shot: number, frame: number, blob: Blob): Clips {
+  const next = new Map(prev);
+  const shots = (next.get(id) ?? []).slice();
+  const frames = (shots[shot] ?? []).slice();
+  frames[frame] = blob;
+  shots[shot] = frames;
+  next.set(id, shots);
+  return next;
+}
+
+/** Nomor frame yang dimiliki SEMUA orang pada SEMUA jepretan di `shotIdx`. */
+function commonFrames(clips: Clips, order: string[], shotIdx: number[]): number[] {
+  const out: number[] = [];
+  for (let k = 0; k < CLIP_OFFSETS.length; k++) {
+    if (order.every((id) => shotIdx.every((s) => !!clips.get(id)?.[s]?.[k]))) out.push(k);
+  }
+  return out;
+}
+
 /** Wajah per peserta per jepretan; "none" = sudah dicek dan tidak ada wajah, null = belum datang. */
 type Faces = Map<string, (Face | "none" | null)[]>;
 
@@ -53,6 +77,14 @@ const SHOT_REST_MS = 1500;
 const CLOCK_PINGS = 5;
 /** Selang deteksi wajah untuk efek di kamera langsung (±9 kali per detik). */
 const LIVE_FACE_MS = 110;
+/** Waktu tiap frame rekaman gerak terhadap saat foto diambil (ms). Satu frame tepat di 0 (foto itu sendiri). */
+const CLIP_OFFSETS = [-440, -330, -220, -110, 0, 110, 220, 330];
+const CLIP_FRAME_WIDTH = 480;
+const CLIP_FRAME_QUALITY = 0.6;
+/** Minimal frame bersama (dari semua orang) untuk membuat GIF. */
+const CLIP_MIN_FRAMES = 3;
+const GIF_SCALE = 0.45;
+const GIF_DELAY_MS = 110;
 
 function defaultsFor(people: number): BoothSettings {
   return {
@@ -63,6 +95,7 @@ function defaultsFor(people: number): BoothSettings {
     caption: "kita",
     format: defaultFormatFor(people),
     background: NO_BACKGROUND,
+    clip: false,
   };
 }
 
@@ -117,6 +150,7 @@ function sanitizeSettings(value: unknown): BoothSettings | null {
     caption: String(s.caption ?? "").slice(0, CAPTION_MAX),
     format: s.format === "single" ? "single" : "strip",
     background: typeof s.background === "string" && hasOwn(BACKGROUNDS, s.background) ? s.background : NO_BACKGROUND,
+    clip: s.clip === true,
   };
 }
 
@@ -171,6 +205,14 @@ export function Booth({
   /** Masker orang per peserta per jepretan, untuk background pengganti. */
   const [masks, setMasks] = useState<Photos>(() => new Map());
   const [faces, setFaces] = useState<Faces>(() => new Map());
+  /** Teks dan stiker di hasil foto, dibagikan ke semua orang (edit terbaru menang di room "semua orang"). */
+  const [overlays, setOverlays] = useState<Overlay[]>([]);
+  const overlaysRevRef = useRef(0);
+  /** Frame rekaman gerak untuk GIF, dan GIF yang sudah dibuat di perangkat ini. */
+  const [clips, setClips] = useState<Clips>(() => new Map());
+  const [gifs, setGifs] = useState<ResultImage[]>([]);
+  const [gifBusy, setGifBusy] = useState(false);
+  const [gifError, setGifError] = useState<string | null>(null);
   /** Efek wajah pilihanku sendiri, dan pilihan tiap teman (dikirim lewat data channel). */
   const [myEffect, setMyEffect] = useState(NO_EFFECT);
   const [effects, setEffects] = useState<Record<string, string>>({});
@@ -204,7 +246,7 @@ export function Booth({
     /** Cerminkan foto lokal (kamera depan). */
     mirror: boolean;
     sendTo: (peerId: string, message: BoothMessage) => void;
-    sendPhoto: (index: number, blob: Blob, kind?: BlobKind) => void;
+    sendPhoto: (index: number, blob: Blob, kind?: BlobKind, frame?: number) => void;
     send: (message: BoothMessage) => void;
     effect: string;
   }>({
@@ -230,6 +272,11 @@ export function Booth({
     setPhotos(new Map());
     setMasks(new Map());
     setFaces(new Map());
+    setOverlays([]);
+    overlaysRevRef.current = 0;
+    setClips(new Map());
+    setGifs(revokeAll);
+    setGifError(null);
     maskJobsRef.current = new Set();
     faceJobsRef.current = new Set();
     setTimedOut(false);
@@ -258,29 +305,46 @@ export function Booth({
         await sleepUntil(captureAt - n * 1000);
         setCount(n);
       }
-      await sleepUntil(captureAt);
-      setCount(null);
-      setFlashKey((key) => key + 1);
-
-      // Foto selalu diambil dari kamera lokal dalam resolusi penuh, bukan dari stream WebRTC.
-      const video = localVideoRef.current;
-      const myId = ctxRef.current.myId;
-      if (video && myId) {
-        try {
-          // Wajah dideteksi pada frame yang sama dengan foto, sebelum frame berikutnya datang.
-          const wantFace = isEffect(ctxRef.current.effect);
-          // Dibulatkan seperti yang dikirim ke teman, supaya posisi efek identik di semua perangkat.
-          const detected = wantFace ? photoFaceFrom(video, ctxRef.current.mirror) : null;
-          const face = detected ? compactFace(detected) : null;
-          const blob = await captureFrame(video, ctxRef.current.mirror);
-          if (wantFace) {
-            setFaces((prev) => withFace(prev, myId, i, face ?? "none", shots));
-            ctxRef.current.send({ type: "face", index: i, face });
+      // Rekam gerak: beberapa frame kecil di sekitar jepretan (satu frame tepat di waktu foto).
+      const clipOn = ctxRef.current.settings.clip;
+      for (const [frameNo, offset] of (clipOn ? CLIP_OFFSETS : [0]).entries()) {
+        await sleepUntil(captureAt + offset);
+        const clipVideo = localVideoRef.current;
+        const clipId = ctxRef.current.myId;
+        if (clipOn && clipVideo && clipId) {
+          try {
+            const clipBlob = await captureFrame(clipVideo, ctxRef.current.mirror, CLIP_FRAME_WIDTH, CLIP_FRAME_QUALITY);
+            setClips((prev) => withClip(prev, clipId, i, frameNo, clipBlob));
+            ctxRef.current.sendPhoto(i, clipBlob, "clip", frameNo);
+          } catch (err) {
+            console.error("[clip]", err);
           }
-          setPhotos((prev) => withPhoto(prev, myId, i, blob, shots));
-          ctxRef.current.sendPhoto(i, blob);
-        } catch (err) {
-          console.error("[capture]", err);
+        }
+        if (offset !== 0) continue;
+
+        setCount(null);
+        setFlashKey((key) => key + 1);
+
+        // Foto selalu diambil dari kamera lokal dalam resolusi penuh, bukan dari stream WebRTC.
+        const video = localVideoRef.current;
+        const myId = ctxRef.current.myId;
+        if (video && myId) {
+          try {
+            // Wajah dideteksi pada frame yang sama dengan foto, sebelum frame berikutnya datang.
+            const wantFace = isEffect(ctxRef.current.effect);
+            // Dibulatkan seperti yang dikirim ke teman, supaya posisi efek identik di semua perangkat.
+            const detected = wantFace ? photoFaceFrom(video, ctxRef.current.mirror) : null;
+            const face = detected ? compactFace(detected) : null;
+            const blob = await captureFrame(video, ctxRef.current.mirror);
+            if (wantFace) {
+              setFaces((prev) => withFace(prev, myId, i, face ?? "none", shots));
+              ctxRef.current.send({ type: "face", index: i, face });
+            }
+            setPhotos((prev) => withPhoto(prev, myId, i, blob, shots));
+            ctxRef.current.sendPhoto(i, blob);
+          } catch (err) {
+            console.error("[capture]", err);
+          }
         }
       }
     }
@@ -297,6 +361,11 @@ export function Booth({
       setPhotos(new Map(order.map((id) => [id, emptyShots(shots)])));
       setMasks(new Map());
       setFaces(new Map());
+      setOverlays([]);
+      overlaysRevRef.current = 0;
+      setClips(new Map());
+      setGifs(revokeAll);
+      setGifError(null);
       maskJobsRef.current = new Set();
       faceJobsRef.current = new Set();
       setTimedOut(false);
@@ -342,6 +411,16 @@ export function Booth({
       });
       maskJobsRef.current.delete(index);
       faceJobsRef.current.delete(index);
+      setClips((prev) => {
+        const next = new Map(prev);
+        for (const id of current.order) {
+          const shotList = (next.get(id) ?? []).slice();
+          shotList[index] = [];
+          next.set(id, shotList);
+        }
+        return next;
+      });
+      setGifs(revokeAll);
       setTimedOut(false);
       setResults(revokeAll);
       setPhase("shooting");
@@ -414,6 +493,15 @@ export function Booth({
           settingsRevRef.current = message.rev;
         }
         setChoices(incoming);
+      } else if (message.type === "overlays") {
+        const items = sanitizeOverlays(message.items);
+        if (!items) return;
+        if (ctx.openControl && typeof message.rev === "number") {
+          // Edit yang lebih lama dari yang kupunya diabaikan; yang lebih baru menang.
+          if (message.rev < overlaysRevRef.current) return;
+          overlaysRevRef.current = message.rev;
+        }
+        setOverlays(items);
       } else if (message.type === "start") {
         const shots = SHOT_OPTIONS.includes(message.shots) ? message.shots : ctx.settings.shots;
         const order = Array.isArray(message.order)
@@ -437,8 +525,14 @@ export function Booth({
     [runSession, runRetake, resetSession, toLocalStart, faceStore],
   );
 
-  const onPhoto = useCallback((from: string, index: number, blob: Blob, kind: BlobKind) => {
+  const onPhoto = useCallback((from: string, index: number, blob: Blob, kind: BlobKind, frame?: number) => {
     if (!Number.isInteger(index) || index < 0 || index >= SHOT_OPTIONS.length) return;
+    if (kind === "clip") {
+      if (typeof frame === "number" && Number.isInteger(frame) && frame >= 0 && frame < CLIP_OFFSETS.length) {
+        setClips((prev) => withClip(prev, from, index, frame, blob));
+      }
+      return;
+    }
     const shots = sessionRef.current?.shots ?? index + 1;
     if (kind === "mask") setMasks((prev) => withPhoto(prev, from, index, blob, shots));
     else setPhotos((prev) => withPhoto(prev, from, index, blob, shots));
@@ -626,6 +720,7 @@ export function Booth({
               masks: maskColumns,
               faces: faceColumns,
               effects: effectColumns,
+              overlays: overlays.filter((o) => o.image === 0),
               background,
               frame,
               filter,
@@ -644,6 +739,7 @@ export function Booth({
               masks: maskColumns.map((list) => [list[s]]),
               faces: faceColumns.map((list) => [list[s]]),
               effects: effectColumns,
+              overlays: overlays.filter((o) => o.image === s),
               background,
               frame,
               filter,
@@ -666,7 +762,7 @@ export function Booth({
     return () => {
       cancelled = true;
     };
-  }, [phase, session, allArrived, timedOut, photos, masks, faces, effects, myEffect, room.myId, background, frame, filter, caption, format, roomId]);
+  }, [phase, session, allArrived, timedOut, photos, masks, faces, effects, myEffect, room.myId, overlays, background, frame, filter, caption, format, roomId]);
 
   // Tidak ada yang tersimpan di server: ingatkan bila masih ada hasil yang belum diunduh.
   const unsaved = phase === "review" && results.some((r) => !savedNames.has(r.name));
@@ -679,6 +775,70 @@ export function Booth({
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [unsaved]);
+
+  const sendOverlays = room.send;
+  const editOverlays = useCallback(
+    (next: Overlay[]) => {
+      if (!canControl) return;
+      setOverlays(next);
+      sendOverlays({ type: "overlays", items: next, rev: ++overlaysRevRef.current });
+    },
+    [canControl, sendOverlays],
+  );
+
+  /** Frame gerak yang sudah lengkap dari semua orang, per gambar hasil. */
+  const clipJobs = session
+    ? settings.format === "strip"
+      ? [{ shots: Array.from({ length: session.shots }, (_, n) => n), image: 0, name: `fotbar-mar-${roomId}.gif`, label: "GIF strip" }]
+      : Array.from({ length: session.shots }, (_, n) => ({ shots: [n], image: n, name: `fotbar-mar-${roomId}-${n + 1}.gif`, label: `GIF foto ${n + 1}` }))
+    : [];
+  const clipReady =
+    !!session && settings.clip && phase === "review" && clipJobs.some((j) => commonFrames(clips, session.order, j.shots).length >= CLIP_MIN_FRAMES);
+
+  const buildGifs = async () => {
+    if (!session || gifBusy) return;
+    setGifBusy(true);
+    setGifError(null);
+    try {
+      const { createGifBuilder } = await import("@/lib/gif");
+      const list: ResultImage[] = [];
+      for (const job of clipJobs) {
+        const frames = commonFrames(clips, session.order, job.shots);
+        if (frames.length < CLIP_MIN_FRAMES) continue;
+        const canvases: HTMLCanvasElement[] = [];
+        for (const k of frames) {
+          canvases.push(
+            await renderStrip({
+              people: session.order.length,
+              shots: job.shots.length,
+              photos: session.order.map((id) => job.shots.map((n) => clips.get(id)?.[n]?.[k] ?? null)),
+              frame,
+              filter,
+              caption,
+              scale: GIF_SCALE,
+              overlays: overlays.filter((o) => o.image === job.image),
+              ...(settings.format === "single" ? { shotOffset: job.shots[0], totalShots: session.shots } : {}),
+            }),
+          );
+        }
+        // Boomerang: maju lalu mundur (tanpa mengulang frame ujung).
+        const order = [...canvases.keys(), ...[...canvases.keys()].slice(1, -1).reverse()];
+        const gif = createGifBuilder();
+        for (const n of order) gif.add(canvases[n], GIF_DELAY_MS);
+        const blob = gif.finish();
+        list.push({ blob, url: URL.createObjectURL(blob), name: job.name, label: job.label });
+      }
+      setGifs((prev) => {
+        prev.forEach((r) => URL.revokeObjectURL(r.url));
+        return list;
+      });
+    } catch (err) {
+      console.error("[gif]", err);
+      setGifError("GIF gagal dibuat. Coba lagi.");
+    } finally {
+      setGifBusy(false);
+    }
+  };
 
   const updateSettings = (patch: Partial<BoothSettings>) => {
     if (!canControl) return;
@@ -996,9 +1156,15 @@ export function Booth({
               images={results}
               zipName={`fotbar-mar-${roomId}.zip`}
               onSaved={(names) => setSavedNames((prev) => new Set([...prev, ...names]))}
+              overlays={overlays}
+              canEdit={canControl}
+              onOverlaysChange={editOverlays}
             />
           ) : (
             <p className="py-16 text-center text-paper/85">Menunggu foto dari teman-temanmu…</p>
+          )}
+          {settings.clip && results.length > 0 && (
+            <ClipPanel ready={clipReady} busy={gifBusy} error={gifError} gifs={gifs} onBuild={buildGifs} />
           )}
           {canControl && session && results.length > 0 && (
             <div className="flex flex-col items-center gap-2">
@@ -1110,6 +1276,21 @@ export function Booth({
                 </div>
               </Field>
 
+              <Field label="Rekam gerak (GIF)">
+                <div className="flex flex-wrap gap-2">
+                  <Chip pressed={!settings.clip} disabled={phase !== "idle"} onClick={() => updateSettings({ clip: false })}>
+                    Mati
+                  </Chip>
+                  <Chip pressed={settings.clip} disabled={phase !== "idle"} onClick={() => updateSettings({ clip: true })}>
+                    Nyala
+                  </Chip>
+                </div>
+                <span className="text-xs text-paper/70">
+                  Tiap jepretan merekam 8 frame kecil (±25 KB) yang dikirim ke teman, lalu dibuat jadi GIF boomerang di tahap
+                  review. GIF memakai bingkai dan filter, tetapi tanpa background pengganti dan efek wajah.
+                </span>
+              </Field>
+
               <Field label="Tulisan di bawah strip" htmlFor="caption">
                 <input
                   id="caption"
@@ -1182,6 +1363,7 @@ export function Booth({
             <Summary label="Jumlah foto" value={`${settings.shots} foto`} />
             <Summary label="Format" value={FORMATS[settings.format]} />
             <Summary label="Hitung mundur" value={`${settings.countdown} detik`} />
+            <Summary label="Rekam gerak" value={settings.clip ? "Nyala" : "Mati"} />
             <Summary label="Background" value={getBackground(settings.background)?.label ?? "Asli"} />
             <Summary label="Tulisan" value={settings.caption.trim() || "kita"} />
           </dl>

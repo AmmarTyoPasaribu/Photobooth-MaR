@@ -1,5 +1,6 @@
 import type { Face } from "./face-math";
 import type { ResultFormat } from "./layout";
+import type { Overlay } from "./overlays";
 
 /** Id bingkai, lihat `src/lib/frames.ts`. */
 export type FrameId = string;
@@ -24,6 +25,8 @@ export type BoothSettings = {
   filter: FilterId;
   shots: number;
   caption: string;
+  /** Rekam gerak: tiap jepretan merekam beberapa frame kecil untuk dibuat GIF di tahap review. */
+  clip: boolean;
   /** Lama hitung mundur per jepretan, dalam detik (`COUNTDOWN_OPTIONS`). */
   countdown: number;
   /** "strip": semua jepretan dalam satu gambar. "single": satu gambar per jepretan. */
@@ -48,6 +51,8 @@ export type BoothMessage =
   | { type: "retake"; index: number; startAt?: number; countdown?: number }
   | { type: "reset" }
   /** Pengukuran selisih jam antar perangkat: `t` = jam pengirim ping, `r` = jam penjawab. */
+  /** Teks dan stiker di hasil foto; `rev` untuk room mode "semua orang" (edit terbaru menang). */
+  | { type: "overlays"; items: Overlay[]; rev?: number }
   /** Efek wajah yang dipilih pengirim untuk dirinya sendiri (`src/lib/face-effects.ts`), atau "none". */
   | { type: "effect"; effect: string }
   /** Wajah pada foto jepretan `index` milik pengirim (null = tidak terdeteksi), untuk efek wajah di hasil. */

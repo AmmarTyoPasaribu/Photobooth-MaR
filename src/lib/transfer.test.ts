@@ -49,3 +49,14 @@ test("meta baru menggantikan transfer yang belum selesai", () => {
   receiver.chunk(new ArrayBuffer(2));
   assert.deepEqual(got, [[1, 2, "photo"]]);
 });
+
+test("frame klip diterima dengan nomor frame dan batas ukuran sendiri", async () => {
+  const { MAX_CLIP_BYTES } = await import("./transfer.ts");
+  const got: [number, number, string, number | undefined][] = [];
+  const receiver = createReceiver((index, blob, kind, frame) => got.push([index, blob.size, kind, frame]));
+  receiver.meta({ type: "photo-meta", index: 2, size: 6, mime: "image/jpeg", kind: "clip", frame: 5 });
+  receiver.chunk(new ArrayBuffer(6));
+  receiver.meta({ type: "photo-meta", index: 0, size: MAX_CLIP_BYTES + 1, mime: "image/jpeg", kind: "clip", frame: 1 });
+  receiver.chunk(new ArrayBuffer(100));
+  assert.deepEqual(got, [[2, 6, "clip", 5]]);
+});

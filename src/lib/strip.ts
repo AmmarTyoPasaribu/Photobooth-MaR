@@ -3,6 +3,7 @@ import { getBackground } from "./backgrounds";
 import { drawFaceEffect, isEffect } from "./face-effects";
 import { mapFace, type Face } from "./face-math";
 import { getLayout } from "./layout";
+import { STICKERS, type Overlay } from "./overlays";
 import type { FilterId, FrameId } from "./types";
 
 export const FILTERS: Record<FilterId, { label: string; css: string }> = {
@@ -601,6 +602,8 @@ export type StripInput = {
   background?: string;
   /** masks[orang][jepretan]: masker orang (PNG alpha) untuk background pengganti. */
   masks?: (Blob | null | undefined)[][];
+  /** Teks dan stiker yang ditempel di gambar ini (sudah disaring untuk gambar ini), digambar paling atas. */
+  overlays?: Overlay[];
   /** effects[orang]: efek wajah pilihan tiap orang (`src/lib/face-effects.ts`), atau "none". */
   effects?: string[];
   /** faces[orang][jepretan]: wajah pada foto (koordinat foto, arah sama dengan foto); "none" = tidak terdeteksi. */
@@ -637,6 +640,63 @@ function drawWithBackground(
   lctx.imageSmoothingQuality = "high";
   drawCover(lctx, mask, 0, 0, cell.w, cell.h);
   ctx.drawImage(layer, cell.x, cell.y);
+}
+
+function isLight(hex: string) {
+  const n = Number.parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255;
+  const g = (n >> 8) & 255;
+  const b = n & 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 150;
+}
+
+/** Teks dan stiker di atas seluruh gambar, memakai posisi dan ukuran ternormalisasi (sama di semua perangkat). */
+async function drawOverlays(ctx: CanvasRenderingContext2D, overlays: Overlay[], width: number) {
+  if (!overlays.length) return;
+  const { display, body } = fonts();
+  const specs = overlays
+    .filter((o) => o.kind === "text")
+    .map((o) => `${o.font === "display" ? 900 : 700} ${Math.round(o.size * width)}px ${o.font === "display" ? display : body}`);
+  if (specs.length) await ensureFonts(...specs);
+
+  for (const o of overlays) {
+    ctx.save();
+    ctx.translate(o.x * width, o.y * ctx.canvas.height);
+    ctx.rotate(o.rot);
+    if (o.kind === "text") {
+      const px = o.size * width;
+      ctx.font = `${o.font === "display" ? 900 : 700} ${px}px ${o.font === "display" ? display : body}`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.lineWidth = px * 0.16;
+      ctx.strokeStyle = isLight(o.color) ? "#1A0F2E" : "#FFFFFF";
+      ctx.strokeText(o.text, 0, 0);
+      ctx.fillStyle = o.color;
+      ctx.fillText(o.text, 0, 0);
+    } else {
+      const def = STICKERS[o.sticker];
+      const w = o.size * width;
+      if (def?.path) {
+        ctx.translate(-w / 2, -w / 2);
+        ctx.scale(w / 24, w / 24);
+        const shape = new Path2D(def.path);
+        ctx.lineJoin = "round";
+        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = "#FFFFFF";
+        ctx.stroke(shape);
+        ctx.fillStyle = def.fill ?? "#FFFFFF";
+        ctx.fill(shape);
+      } else if (def?.src) {
+        const img = await loadAsset(def.src);
+        if (img && img.naturalWidth) {
+          const h = (w * img.naturalHeight) / img.naturalWidth;
+          ctx.drawImage(img, -w / 2, -h / 2, w, h);
+        }
+      }
+    }
+    ctx.restore();
+  }
 }
 
 export async function renderStrip(input: StripInput): Promise<HTMLCanvasElement> {
@@ -743,6 +803,9 @@ export async function renderStrip(input: StripInput): Promise<HTMLCanvasElement>
   ctx.globalAlpha = 0.7;
   ctx.fillText(date, width / 2, footerTop + 140 * unit, maxText);
   ctx.globalAlpha = 1;
+
+  // 6. teks dan stiker dari pengguna, paling atas
+  await drawOverlays(ctx, input.overlays ?? [], width);
 
   return canvas;
 }
